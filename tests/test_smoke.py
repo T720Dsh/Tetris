@@ -230,6 +230,39 @@ def test_pause_and_restart():
     check("重开进入倒计时", g.state == "countdown")
 
 
+def test_keybinding_settings():
+    print("自定义键位与冲突交换")
+    g = make_game()
+    g.settings["keybinds"] = dict(g.settings["keybinds"])
+    old_left = g._key("move_left")
+    old_right = g._key("move_right")
+    g.state = "keybinds"
+    g.keybind_idx = list(g.settings["keybinds"]).index("move_left")
+    g._keybinds_key(pygame.K_RETURN)
+    check("Enter 进入按键捕获", g.binding_capture == "move_left")
+    g._keybinds_key(old_right)
+    check("新键位生效", g._key("move_left") == old_right)
+    check("冲突键位自动交换", g._key("move_right") == old_left)
+    g._keybinds_key(pygame.K_F2)
+    from tetris_game.game import DEFAULT_KEYBINDS
+    check("F2 恢复全部默认", g.settings["keybinds"] == DEFAULT_KEYBINDS)
+
+
+def test_fullscreen_setting_callback():
+    print("全屏设置回调")
+    calls = []
+    screen = pygame.display.set_mode((1280, 800))
+    g = Game(screen, os.path.join(os.path.dirname(__file__), "_smoke_records.json"),
+             fullscreen_toggle=lambda enabled=None: calls.append(enabled) or bool(enabled))
+    g.state = "settings"
+    g.settings_idx = next(i for i, item in enumerate(g.settings_items) if item[0] == "fullscreen")
+    before = g.settings["fullscreen"]
+    g._settings_key(pygame.K_RIGHT)
+    check("设置页调用全屏切换", calls == [not before])
+    check("全屏状态同步", g.settings["fullscreen"] is (not before))
+    g.set_fullscreen_state(False)
+
+
 def test_gameover_screens():
     print("游戏结束与返回菜单")
     g = make_game()
@@ -361,6 +394,8 @@ if __name__ == "__main__":
     test_view_rotation()
     test_skins_and_backgrounds()
     test_pause_and_restart()
+    test_keybinding_settings()
+    test_fullscreen_setting_callback()
     test_gameover_screens()
     test_draw_all_states()
     print()

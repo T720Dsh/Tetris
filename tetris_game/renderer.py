@@ -161,9 +161,14 @@ class Renderer:
     def _poly(self, surf: pygame.Surface, pts: list[tuple[float, float]],
               color: tuple[int, int, int], alpha: int = 255) -> None:
         if alpha < 255:
-            tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
-            pygame.draw.polygon(tmp, (*color, alpha), [(int(x), int(y)) for x, y in pts])
-            surf.blit(tmp, (0, 0))
+            left = math.floor(min(x for x, _ in pts)) - 1
+            top = math.floor(min(y for _, y in pts)) - 1
+            right = math.ceil(max(x for x, _ in pts)) + 2
+            bottom = math.ceil(max(y for _, y in pts)) + 2
+            tmp = pygame.Surface((max(1, right - left), max(1, bottom - top)), pygame.SRCALPHA)
+            local = [(int(x - left), int(y - top)) for x, y in pts]
+            pygame.draw.polygon(tmp, (*color, alpha), local)
+            surf.blit(tmp, (left, top))
         else:
             pygame.draw.polygon(surf, color, [(int(x), int(y)) for x, y in pts])
 
@@ -184,7 +189,18 @@ class Renderer:
         top_y3 = y3 - CUBE_H
 
         col_top, col_east, col_south, col_edge = skin_face_colors(color, skin)
+        # Light comes from the upper-left of the camera.  Let side brightness react
+        # to yaw so rotating the board does not leave the cubes looking painted on.
+        east_light = 0.82 + 0.18 * max(0.0, math.cos(self.yaw + 0.55))
+        south_light = 0.78 + 0.22 * max(0.0, math.sin(self.yaw + 0.90))
+        col_east = _shade(col_east, east_light)
+        col_south = _shade(col_south, south_light)
         top_pts = [(x0, top_y0), (x1, top_y1), (x2, top_y2), (x3, top_y3)]
+
+        # Contact occlusion gives depth without a screen-space halo that would
+        # bleach this cube or spill across neighbouring blocks.
+        self._poly(surf, [(x0, y0 + 2), (x1, y1 + 2),
+                          (x2, y2 + 3), (x3, y3 + 3)], (0, 0, 8), 42)
 
         # 东面（c+1 棱）与南面（r+1 棱）的覆盖顺序随视角方位角翻转：
         # 视角转到背面时，原本的"南面"移到左边，需先画
@@ -203,31 +219,32 @@ class Renderer:
                        col_east, alpha)
         # 顶面（最亮）：A_top -> B_top -> C_top -> D_top
         self._poly(surf, top_pts, col_top, alpha)
+        # Small inset bevel: enough to catch light while preserving a clean tile.
+        cx = sum(pt[0] for pt in top_pts) / 4
+        cy_top = sum(pt[1] for pt in top_pts) / 4
+        inset = [(x + (cx - x) * 0.10, y + (cy_top - y) * 0.10) for x, y in top_pts]
+        self._poly(surf, inset, _shade(col_top, 1.06), max(0, alpha - 18))
         draw_top_pattern(surf, top_pts, skin, color, x0, y0, x2, y2, top_y0, top_y2)
 
         ew = skin.get("edge_w", 1)
-        if alpha == 255 and ew >= 1:
+        if alpha >= 220 and ew >= 1:
             # 细描边增加锐利感
             for a, b in [(top_pts[0], top_pts[1]), (top_pts[1], top_pts[2]),
                          (top_pts[2], top_pts[3]), (top_pts[3], top_pts[0]),
                          ((x1, y1), (x1, top_y1)), ((x2, y2), (x2, top_y2)),
                          ((x3, y3), (x3, top_y3))]:
                 pygame.draw.line(surf, col_edge, a, b, ew)
-
-        if glow or skin.get("glow"):
-            g = self._glow(color)
-            cx = (x0 + x2) / 2
-            cy = (top_y0 + top_y2) / 2
-            surf.blit(g, (cx - g.get_width() / 2, cy - g.get_height() / 2),
-                      special_flags=pygame.BLEND_ADD)
+            # One-pixel specular edge separates adjacent cubes without a halo.
+            highlight = (255, 255, 255) if glow else _shade(col_top, 1.18)
+            pygame.draw.line(surf, highlight, top_pts[0], top_pts[1], 1)
 
     def _glow(self, color: tuple[int, int, int]) -> pygame.Surface:
         key = str(color)
         if key not in self._glow_cache:
-            size = 96
+            size = 82
             g = pygame.Surface((size, size), pygame.SRCALPHA)
             for i in range(size // 2, 0, -1):
-                a = int(50 * (1 - i / (size / 2)) ** 2)
+                a = int(24 * (1 - i / (size / 2)) ** 2)
                 pygame.draw.circle(g, (*color, a), (size // 2, size // 2), i)
             self._glow_cache[key] = g
         return self._glow_cache[key]
@@ -258,33 +275,20 @@ class Renderer:
 
     # ------------------------------------------------------------ 平台与地面
     def draw_floor(self, surf: pygame.Surface) -> None:
-        """场地下方的透视地面网格（画在最后层）"""
+        """场地下方的环境阴影；网格只由平台绘制，避免双层重影。"""
         x0, y0 = self.to_screen(0, TOP_ROW)
         x1, y1 = self.to_screen(COLS, TOP_ROW)
         x2, y2 = self.to_screen(COLS, ROWS)
         x3, y3 = self.to_screen(0, ROWS)
         tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
-        # 地面暗色渐变（透视感：远处更暗）
-        for i in range(14):
-            t = i / 14
-            y_top = y0 + (y2 - y0) * t
-            y_bot = y0 + (y2 - y0) * (t + 1 / 14)
-            col = (20, 26, 60, int(36 + 40 * t))
-            pygame.draw.polygon(tmp, col, [(x0 + (x2 - x0) * t, y_top),
-                                           (x1 + (x2 - x1) * t, y_top),
-                                           (x1 + (x2 - x1) * (t + 1 / 14), y_bot),
-                                           (x0 + (x2 - x0) * (t + 1 / 14), y_bot)])
-        # 地面网格线（等距方向）
-        for i in range(COLS + ROWS + 4):
-            k = i - 11
-            a = self.to_screen(k, TOP_ROW - 3)
-            b = self.to_screen(k - 4, ROWS)
-            pygame.draw.line(tmp, (90, 110, 210, 26), (a[0], a[1]), (b[0], b[1]), 1)
-        for i in range(COLS + ROWS + 4):
-            k = i - 11
-            a = self.to_screen(COLS + 3, k)
-            b = self.to_screen(-4, k + 4)
-            pygame.draw.line(tmp, (90, 110, 210, 26), (a[0], a[1]), (b[0], b[1]), 1)
+        poly = [(x0, y0 + 18), (x1, y1 + 18), (x2, y2 + 26), (x3, y3 + 26)]
+        for spread in range(28, 2, -4):
+            center_x = sum(p[0] for p in poly) / 4
+            center_y = sum(p[1] for p in poly) / 4
+            factor = 1.0 + spread / 240.0
+            expanded = [(center_x + (x - center_x) * factor,
+                         center_y + (y - center_y) * factor) for x, y in poly]
+            pygame.draw.polygon(tmp, (0, 0, 12, 3), expanded)
         surf.blit(tmp, (0, 0))
 
     def draw_platform(self, surf: pygame.Surface) -> None:
@@ -345,9 +349,11 @@ class Renderer:
     def piece_shadow(self, surf: pygame.Surface, c: float, r: float, w: int, h: int) -> None:
         """活动方块在落点处的软阴影"""
         cx, cy = self.to_screen(c + w / 2, r + h / 2)
-        tmp = pygame.Surface((140, 60), pygame.SRCALPHA)
-        pygame.draw.ellipse(tmp, (0, 0, 10, 90), (10, 10, 120, 40))
-        surf.blit(tmp, (cx - 70, cy + CUBE_H * 0.55 - 30))
+        tmp = pygame.Surface((112, 46), pygame.SRCALPHA)
+        for pad, alpha in ((2, 10), (7, 14), (12, 18)):
+            pygame.draw.ellipse(tmp, (0, 0, 8, alpha),
+                                (pad, pad // 2, 112 - pad * 2, 40 - pad))
+        surf.blit(tmp, (cx - 56, cy + CUBE_H * 0.45 - 23))
 
 
 def make_particles_for_clear(renderer: Renderer, cells: list[tuple[int, int]],

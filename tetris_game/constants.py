@@ -84,9 +84,9 @@ BOARD_CY = 425
 # top/east/south/edge：三面与描边的明暗系数；saturation：饱和度；glow：活动块辉光；
 # alpha：不透明度；edge_w：描边宽度；pattern：顶面装饰图案
 SKINS = {
-    "neon":    {"name": "霓虹",   "top": 1.18, "east": 0.92, "south": 0.62, "edge": 0.45,
-                "saturation": 1.00, "glow": True,  "alpha": 255, "edge_w": 1, "pattern": None},
-    "crystal": {"name": "水晶",   "top": 1.32, "east": 1.00, "south": 0.72, "edge": 0.55,
+    "neon":    {"name": "霓虹",   "top": 1.10, "east": 0.82, "south": 0.58, "edge": 0.32,
+                "saturation": 0.92, "glow": True,  "alpha": 255, "edge_w": 1, "pattern": None},
+    "crystal": {"name": "水晶",   "top": 1.24, "east": 0.92, "south": 0.66, "edge": 0.42,
                 "saturation": 1.00, "glow": False, "alpha": 235, "edge_w": 1, "pattern": "crystal"},
     "metal":   {"name": "金属",   "top": 0.88, "east": 0.62, "south": 0.40, "edge": 0.28,
                 "saturation": 0.55, "glow": False, "alpha": 255, "edge_w": 1, "pattern": "metal"},

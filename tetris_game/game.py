@@ -4,6 +4,7 @@ import json
 import math
 import os
 import random
+from typing import Callable
 
 import pygame
 
@@ -17,12 +18,35 @@ from .constants import (WIN_W, WIN_H, TEXT_MAIN, TEXT_DIM, ACCENT, ACCENT2,
 from .pieces import ALL_CELLS, Bag7
 from .renderer import Renderer, make_particles_for_clear, update_particles, draw_bg_theme
 
-SCENE_RECT = pygame.Rect(300, 110, 760, 520)
-MOVE_KEYS = (pygame.K_LEFT, pygame.K_RIGHT)
+SCENE_RECT = pygame.Rect(286, 88, 766, 584)
+
+DEFAULT_KEYBINDS = {
+    "move_left": pygame.K_LEFT,
+    "move_right": pygame.K_RIGHT,
+    "soft_drop": pygame.K_DOWN,
+    "rotate_cw": pygame.K_UP,
+    "rotate_ccw": pygame.K_z,
+    "rotate_180": pygame.K_a,
+    "hard_drop": pygame.K_SPACE,
+    "hold": pygame.K_c,
+    "pause": pygame.K_ESCAPE,
+    "restart": pygame.K_r,
+    "view_left": pygame.K_q,
+    "view_right": pygame.K_e,
+    "view_reset": pygame.K_v,
+}
+
+KEYBIND_LABELS = {
+    "move_left": "左移", "move_right": "右移", "soft_drop": "软降",
+    "rotate_cw": "顺时针旋转", "rotate_ccw": "逆时针旋转",
+    "rotate_180": "旋转 180°", "hard_drop": "硬降", "hold": "暂存",
+    "pause": "暂停", "restart": "重新开始", "view_left": "视角向左",
+    "view_right": "视角向右", "view_reset": "复位视角",
+}
 
 _SETTINGS_DEFAULTS = {
     "das": DAS, "arr": ARR, "ghost": True, "sound": True, "volume": 0.7,
-    "skin": "neon", "bg_theme": "default", "custom_bg": "",
+    "skin": "neon", "bg_theme": "default", "custom_bg": "", "fullscreen": False,
 }
 
 
@@ -31,13 +55,15 @@ def _clamp(v, lo, hi):
 
 
 class Game:
-    def __init__(self, screen: pygame.Surface, records_path: str):
+    def __init__(self, screen: pygame.Surface, records_path: str,
+                 fullscreen_toggle: Callable[[bool | None], bool] | None = None):
         self.screen = screen
         self.records_path = records_path
         self.fonts = ui.Fonts()
         self.renderer = Renderer()
         self.records = self._load_records()
         self.settings = self._load_settings()
+        self.fullscreen_toggle = fullscreen_toggle
         self.renderer.set_skin(self.settings["skin"])
         if self.settings["bg_theme"] == "custom" and self.settings.get("custom_bg"):
             if not self.renderer.load_custom_bg(self.settings["custom_bg"]):
@@ -80,6 +106,9 @@ class Game:
 
         # 设置界面状态
         self.settings_idx = 0
+        self.settings_return_state = "menu"
+        self.keybind_idx = 0
+        self.binding_capture: str | None = None
         self.settings_items = [
             ("das", "移动延迟 DAS", 0.040, 0.300, 0.005),
             ("arr", "重复间隔 ARR", 0.000, 0.120, 0.005),
@@ -89,6 +118,8 @@ class Game:
             ("skin", "方块材质", None, None, tuple(SKIN_ORDER)),
             ("bg_theme", "背景主题", None, None, tuple(BG_THEMES)),
             ("bg_upload", "上传背景图…", None, None, None),
+            ("fullscreen", "全屏显示", None, None, None),
+            ("controls", "自定义键位…", None, None, None),
         ]
 
     # ------------------------------------------------------------ 记录
@@ -115,12 +146,31 @@ class Game:
 
     def _load_settings(self) -> dict:
         st = dict(_SETTINGS_DEFAULTS)
+        st["keybinds"] = dict(DEFAULT_KEYBINDS)
         try:
             with open(self._settings_path(), "r", encoding="utf-8") as f:
-                st.update(json.load(f))
+                loaded = json.load(f)
+                bindings = loaded.pop("keybinds", {})
+                st.update(loaded)
+                for action, key in bindings.items():
+                    if action in DEFAULT_KEYBINDS and isinstance(key, int):
+                        st["keybinds"][action] = key
         except Exception:
             pass
         return st
+
+    def set_fullscreen_state(self, enabled: bool) -> None:
+        self.settings["fullscreen"] = bool(enabled)
+        self.save_settings()
+
+    def _key(self, action: str) -> int:
+        return self.settings["keybinds"].get(action, DEFAULT_KEYBINDS[action])
+
+    def _pressed(self, action: str, key: int) -> bool:
+        return key == self._key(action)
+
+    def _held(self, action: str) -> bool:
+        return self._key(action) in self.keys_held
 
     def save_settings(self) -> None:
         try:
@@ -163,13 +213,15 @@ class Game:
     # ------------------------------------------------------------ 输入事件
     def on_key_down(self, key: int, mods: int) -> None:
         self.keys_held.add(key)
-        shift = bool(mods & pygame.KMOD_SHIFT)
 
         if self.state == "menu":
             self._menu_key(key)
             return
         if self.state == "settings":
             self._settings_key(key)
+            return
+        if self.state == "keybinds":
+            self._keybinds_key(key)
             return
         if self.state == "countdown":
             return
@@ -180,42 +232,42 @@ class Game:
                 self.state = "menu"
             return
         if self.state == "paused":
-            if key in (pygame.K_ESCAPE, pygame.K_p, pygame.K_RETURN):
+            if self._pressed("pause", key) or key == pygame.K_RETURN:
                 self.state = "playing"
-            elif key == pygame.K_r:
+            elif self._pressed("restart", key):
                 self.restart()
             return
 
         # playing
         b = self.board
-        if key in (pygame.K_ESCAPE, pygame.K_p):
+        if self._pressed("pause", key):
             self.state = "paused"
-        elif key == pygame.K_r:
+        elif self._pressed("restart", key):
             self.restart()
-        elif key in (pygame.K_UP, pygame.K_x, pygame.K_w):
+        elif self._pressed("rotate_cw", key):
             self._try_rotate(1)
-        elif key in (pygame.K_z, pygame.K_LCTRL):
+        elif self._pressed("rotate_ccw", key):
             self._try_rotate(-1)
-        elif key == pygame.K_a:
+        elif self._pressed("rotate_180", key):
             self._try_rotate(2)
-        elif key == pygame.K_q:
+        elif self._pressed("view_left", key):
             self.rotate_view(-0.10, 0.0)
-        elif key == pygame.K_e:
+        elif self._pressed("view_right", key):
             self.rotate_view(0.10, 0.0)
-        elif key == pygame.K_v:
+        elif self._pressed("view_reset", key):
             self.renderer.set_view(0.0, 0.0)
-        elif key == pygame.K_SPACE:
+        elif self._pressed("hard_drop", key):
             self._hard_drop()
-        elif key == pygame.K_c or shift:
+        elif self._pressed("hold", key):
             self._hold()
-        elif key in MOVE_KEYS:
+        elif key in (self._key("move_left"), self._key("move_right")):
             self.das_acc = 0.0
             self.arr_acc = 0.0
             self._move_held(key)
 
     def on_key_up(self, key: int) -> None:
         self.keys_held.discard(key)
-        if key in MOVE_KEYS:
+        if key in (self._key("move_left"), self._key("move_right")):
             self.das_acc = 0.0
             self.arr_acc = 0.0
 
@@ -231,6 +283,14 @@ class Game:
 
     def _settings_key(self, key: int) -> None:
         key_name, _, lo, hi, step = self.settings_items[self.settings_idx]
+        if key_name == "controls" and key in (pygame.K_LEFT, pygame.K_RIGHT,
+                                                pygame.K_SPACE, pygame.K_RETURN):
+            self.state = "keybinds"
+            self.keybind_idx = 0
+            self.binding_capture = None
+            self.buttons = []
+            self.sound("ui_ok")
+            return
         if key_name == "bg_upload":
             if key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_SPACE, pygame.K_RETURN):
                 self._pick_bg_image()
@@ -243,7 +303,7 @@ class Game:
                                          else self.settings_idx + 1) % len(self.settings_items)
                     self.sound("ui_move")
             return
-        if key in (pygame.K_ESCAPE, pygame.K_RETURN):
+        if key == pygame.K_ESCAPE:
             self.sound("ui_ok")
             self._back_from_settings()
             return
@@ -254,7 +314,12 @@ class Game:
             self.settings_idx = (self.settings_idx + 1) % len(self.settings_items)
             self.sound("ui_move")
         elif key in (pygame.K_LEFT, pygame.K_RIGHT):
-            if step is None:
+            if key_name == "fullscreen":
+                target = not self.settings["fullscreen"]
+                if self.fullscreen_toggle:
+                    target = self.fullscreen_toggle(target)
+                self.settings["fullscreen"] = target
+            elif step is None:
                 # 开关
                 self.settings[key_name] = not self.settings[key_name]
             elif isinstance(step, tuple):
@@ -270,6 +335,46 @@ class Game:
                 self.renderer.set_skin(self.settings["skin"])
             self.save_settings()
             self.sound("ui_move")
+
+    def _keybinds_key(self, key: int) -> None:
+        actions = list(KEYBIND_LABELS)
+        if self.binding_capture:
+            if key == pygame.K_ESCAPE:
+                self.binding_capture = None
+                self.sound("ui_move")
+                return
+            action = self.binding_capture
+            old_key = self._key(action)
+            conflict = next((name for name in actions
+                             if name != action and self._key(name) == key), None)
+            self.settings["keybinds"][action] = key
+            if conflict:
+                self.settings["keybinds"][conflict] = old_key
+            self.binding_capture = None
+            self.save_settings()
+            self.sound("ui_ok")
+            return
+        if key == pygame.K_ESCAPE:
+            self.state = "settings"
+            self.buttons = []
+        elif key in (pygame.K_UP, pygame.K_w):
+            self.keybind_idx = (self.keybind_idx - 1) % len(actions)
+            self.sound("ui_move")
+        elif key in (pygame.K_DOWN, pygame.K_s):
+            self.keybind_idx = (self.keybind_idx + 1) % len(actions)
+            self.sound("ui_move")
+        elif key in (pygame.K_RETURN, pygame.K_SPACE):
+            self.binding_capture = actions[self.keybind_idx]
+            self.sound("ui_ok")
+        elif key in (pygame.K_BACKSPACE, pygame.K_DELETE):
+            action = actions[self.keybind_idx]
+            self.settings["keybinds"][action] = DEFAULT_KEYBINDS[action]
+            self.save_settings()
+            self.sound("ui_move")
+        elif key == pygame.K_F2:
+            self.settings["keybinds"] = dict(DEFAULT_KEYBINDS)
+            self.save_settings()
+            self.sound("ui_ok")
 
     def _pick_bg_image(self) -> None:
         """弹出系统文件对话框选择背景图（无头环境跳过）"""
@@ -316,7 +421,7 @@ class Game:
             self.sound("hold")
 
     def _move_held(self, key: int) -> None:
-        dx = -1 if key == pygame.K_LEFT else 1
+        dx = -1 if key == self._key("move_left") else 1
         if self.board and self.board.try_move(dx, 0):
             self.sound("move")
             if self.board.piece and self.board.piece.grounded:
@@ -453,8 +558,8 @@ class Game:
 
         b = self.board
         # 移动输入（DAS / ARR）
-        left = pygame.K_LEFT in self.keys_held
-        right = pygame.K_RIGHT in self.keys_held
+        left = self._held("move_left")
+        right = self._held("move_right")
         if left != right:
             self.das_acc += dt
             if self.das_acc >= self.settings["das"]:
@@ -468,7 +573,7 @@ class Game:
                         b.reset_lock()
                     self.arr_acc -= step
         # 软降
-        if pygame.K_DOWN in self.keys_held or pygame.K_s in self.keys_held:
+        if self._held("soft_drop"):
             self.soft_acc += dt
             while self.soft_acc >= SOFT_DROP_SEC:
                 if not b.soft_drop_step():
@@ -507,19 +612,19 @@ class Game:
     # ------------------------------------------------------------ 菜单
     def _make_menu_buttons(self) -> list[ui.Button]:
         btns: list[ui.Button] = []
-        y = 232
-        for m in MODES:
+        for i, m in enumerate(MODES):
             cfg = MODE_CFG[m]
             best = self.records[m]
             if cfg["record"] == "score":
                 best_txt = f"最高分 {best}" if best else "暂无纪录"
             else:
                 best_txt = f"最佳 {ui.format_time(best)}" if best else "暂无纪录"
-            btns.append(ui.Button(pygame.Rect(420, y, 440, 56), MODE_NAME[m], f"start:{m}",
+            x = 220 + (i % 2) * 430
+            y = 218 + (i // 2) * 76
+            btns.append(ui.Button(pygame.Rect(x, y, 410, 66), MODE_NAME[m], f"start:{m}",
                                   sub=f"{MODE_DESC[m]}   ·   {best_txt}"))
-            y += 62
-        btns.append(ui.Button(pygame.Rect(420, y + 4, 214, 48), "设置", "settings"))
-        btns.append(ui.Button(pygame.Rect(646, y + 4, 214, 48), "退出游戏", "quit"))
+        btns.append(ui.Button(pygame.Rect(650, 446, 198, 66), "设置", "settings"))
+        btns.append(ui.Button(pygame.Rect(862, 446, 198, 66), "退出游戏", "quit"))
         return btns
 
     def _selected_index(self) -> int:
@@ -554,6 +659,7 @@ class Game:
             self.sound("ui_ok")
             self.new_game(act[6:])
         elif act == "settings":
+            self.settings_return_state = "paused" if self.state == "paused" else "menu"
             self.state = "settings"
             self.sound("ui_ok")
         elif act == "quit":
@@ -569,10 +675,7 @@ class Game:
             self._back_from_settings()
 
     def _back_from_settings(self) -> None:
-        if self.board is not None and self.state != "menu":
-            self.state = "paused"
-        else:
-            self.state = "menu"
+        self.state = self.settings_return_state
 
     def handle_click(self, pos: tuple[int, int]) -> None:
         for b in self.buttons:
@@ -581,14 +684,27 @@ class Game:
                 return
         # 设置项点击
         if self.state == "settings":
-            y = 196
+            y = 172
             for i, (kn, _, _, _, _) in enumerate(self.settings_items):
-                if pygame.Rect(410, y - 10, 460, 42).collidepoint(pos):
+                if pygame.Rect(410, y - 12, 460, 36).collidepoint(pos):
                     self.settings_idx = i
                     if kn == "bg_upload":
                         self._pick_bg_image()
+                    elif kn == "controls":
+                        self.state = "keybinds"
+                        self.keybind_idx = 0
                     return
-                y += 46
+                y += 40
+        elif self.state == "keybinds":
+            actions = list(KEYBIND_LABELS)
+            for i in range(len(actions)):
+                col, row = i // 7, i % 7
+                rect = pygame.Rect(310 + col * 340, 188 + row * 52, 320, 42)
+                if rect.collidepoint(pos):
+                    self.keybind_idx = i
+                    self.binding_capture = actions[i]
+                    self.sound("ui_ok")
+                    return
 
     def handle_hover(self, pos: tuple[int, int]) -> None:
         self.mouse_pos = pos
@@ -672,13 +788,14 @@ class Game:
                 scene.blit(tmp, (0, 0))
             # 幽灵 + 活动方块
             p = b.piece
+            if p:
+                self.renderer.piece_shadow(scene, p.x, p.y + b.drop_distance(), 4, 2)
             if p and self.settings["ghost"]:
                 gy = p.y + b.drop_distance()
                 ghost_cells = [(p.x + cx, gy + cy) for cx, cy in ALL_CELLS[p.name][p.rot]]
                 self.renderer.draw_ghost(scene, ghost_cells, PIECE_COLORS[p.name])
             if p:
                 fall = b.drop_frac if b.gravity_per_frame(0.016) < 1.0 else 0.0
-                self.renderer.piece_shadow(scene, p.x, p.y + b.drop_distance(), 4, 2)
                 cells = sorted(p.cells(),
                                key=lambda cc: self.renderer.sort_key(cc[0], cc[1] + fall))
                 for c, r in cells:
@@ -717,6 +834,8 @@ class Game:
             self._draw_paused()
         elif self.state == "settings":
             self._draw_settings()
+        elif self.state == "keybinds":
+            self._draw_keybinds()
         elif self.state == "gameover":
             self._draw_gameover()
 
@@ -724,15 +843,19 @@ class Game:
     def _draw_menu(self) -> None:
         s, f = self.screen, self.fonts
         # 标题光晕
+        title_glow = pygame.Surface(s.get_size(), pygame.SRCALPHA)
         for i in range(30, 0, -1):
-            a = int(10 * (1 - i / 30))
-            pygame.draw.circle(s, (60, 90, 255, a), (640, 96), i * 5)
+            a = int(7 * (1 - i / 30) ** 2)
+            pygame.draw.circle(title_glow, (45, 90, 255, a), (640, 106), i * 5)
+        s.blit(title_glow, (0, 0))
         ui.text(s, f, "TETRIS 3D RUSH", 62, (640, 120), color=ACCENT, anchor="center", bold=True)
         ui.text(s, f, "伪 3D · 竞速俄罗斯方块", 22, (640, 172), color=TEXT_DIM, anchor="center")
+        ui.panel(s, pygame.Rect(196, 198, 888, 338), fill=(10, 14, 34, 115),
+                 border=(90, 120, 220, 45), radius=20)
         self.buttons = self._make_menu_buttons()
         for b in self.buttons:
             b.draw(s, f)
-        ui.text(s, f, "↑↓ 选择   Enter 开始   ←→ 在玩法中移动方块", 15,
+        ui.text(s, f, "↑↓ 选择   Enter 开始   F11 / Alt+Enter 全屏", 15,
                 (640, WIN_H - 60), color=TEXT_DIM, anchor="center", shadow=False)
         ui.text(s, f, "竞速规则：指南计分 · 7-bag · SRS 踢墙 · T-spin 判定 · 硬降 ×2/格",
                 15, (640, WIN_H - 36), color=TEXT_DIM, anchor="center", shadow=False)
@@ -744,7 +867,7 @@ class Game:
         if b is None:
             return
         cfg = MODE_CFG.get(self.mode, {})
-        ui.panel(s, pygame.Rect(16, 16, 300, 620))
+        ui.panel(s, pygame.Rect(16, 16, 254, 642))
         ui.text(s, f, MODE_NAME[self.mode], 24, (30, 32), color=ACCENT)
         ui.text(s, f, ui.format_time(self.elapsed), 44, (30, 72), color=TEXT_MAIN, bold=True)
         ui.text(s, f, "已生存" if self.mode == "endless" else "计时", 15, (30, 124),
@@ -765,7 +888,7 @@ class Game:
         y = 152
         for k, v in rows:
             ui.text(s, f, k, 16, (30, y), color=TEXT_DIM, shadow=False)
-            ui.text(s, f, v, 20, (150, y - 4), color=TEXT_MAIN)
+            ui.text(s, f, v, 20, (244, y + 8), color=TEXT_MAIN, anchor="midright")
             y += 38
         ui.text(s, f, "最佳纪录", 16, (30, y + 4), color=TEXT_DIM, shadow=False)
         y += 34
@@ -777,21 +900,30 @@ class Game:
             else:
                 v = ui.format_time(best) if best else "—"
             ui.text(s, f, MODE_NAME[m], 14, (30, y), color=TEXT_DIM, shadow=False)
-            ui.text(s, f, v, 14, (196, y), color=TEXT_MAIN, shadow=False)
+            ui.text(s, f, v, 14, (244, y + 8), color=TEXT_MAIN,
+                    anchor="midright", shadow=False)
             y += 24
 
         # 右侧：暂存 + 下一块
-        ui.panel(s, pygame.Rect(1030, 16, 234, 486))
-        ui.draw_preview(s, f, "暂存 HOLD", b.hold, (1147, 190), skin=self.renderer.current_skin)
-        ui.text(s, f, "NEXT", 16, (1147, 300), color=TEXT_DIM, anchor="center", shadow=False)
+        ui.panel(s, pygame.Rect(1044, 16, 220, 642))
+        ui.text(s, f, "方块队列", 19, (1154, 40), color=TEXT_MAIN,
+                anchor="center", bold=True)
+        ui.draw_preview(s, f, "暂存  HOLD", b.hold, (1154, 118), cell=13,
+                        skin=self.renderer.current_skin, box_size=(184, 112))
+        ui.text(s, f, "接下来  NEXT", 14, (1154, 196), color=TEXT_DIM,
+                anchor="center", shadow=False)
         for i, name in enumerate(b.next_queue[:5]):
-            ui.draw_preview(s, f, "", name, (1147, 352 + i * 62), cell=13,
-                             skin=self.renderer.current_skin)
+            ui.draw_preview(s, f, "", name, (1154, 240 + i * 75), cell=11,
+                            skin=self.renderer.current_skin, box_size=(184, 62))
 
-        ui.text(s, f, "←→ 移动  ↓ 软降  ↑/X 旋转  Z 逆旋  A 180°  C 暂存  空格 硬降",
+        def kn(action):
+            return pygame.key.name(self._key(action)).upper()
+        ui.text(s, f, f"{kn('move_left')}/{kn('move_right')} 移动   {kn('soft_drop')} 软降   "
+                f"{kn('rotate_cw')} 旋转   {kn('hard_drop')} 硬降   {kn('hold')} 暂存",
                 14, (WIN_W // 2, WIN_H - 46), color=TEXT_DIM, anchor="center", shadow=False)
-        ui.text(s, f, "Esc 暂停  R 重开  Q/E 旋转视角  V 复位视角  按住拖拽可 360° 转动",
-                14, (WIN_W // 2, WIN_H - 26), color=TEXT_DIM, anchor="center", shadow=False)
+        ui.text(s, f, f"{kn('pause')} 暂停   {kn('restart')} 重开   F11 全屏   "
+                "鼠标拖拽可旋转视角",
+                14, (WIN_W // 2, WIN_H - 25), color=TEXT_DIM, anchor="center", shadow=False)
 
     def _draw_countdown(self) -> None:
         n = int(math.ceil(self.countdown))
@@ -857,10 +989,10 @@ class Game:
         tmp = pygame.Surface(s.get_size(), pygame.SRCALPHA)
         pygame.draw.rect(tmp, (5, 6, 16, 180), (0, 0, WIN_W, WIN_H))
         s.blit(tmp, (0, 0))
-        ui.panel(s, pygame.Rect(390, 105, 500, 550))
-        ui.text(s, f, "设置", 34, (640, 133), color=ACCENT, anchor="center", bold=True)
+        ui.panel(s, pygame.Rect(390, 78, 500, 630))
+        ui.text(s, f, "设置", 34, (640, 112), color=ACCENT, anchor="center", bold=True)
         st = self.settings
-        y = 196
+        y = 172
         for i, (key, label, _, _, _) in enumerate(self.settings_items):
             if key == "das":
                 val = f"{st['das'] * 1000:.0f} ms"
@@ -879,19 +1011,60 @@ class Game:
                     val += "（未选择）"
             elif key == "bg_upload":
                 val = "选择图片…" if not st.get("custom_bg") else os.path.basename(st["custom_bg"])
+            elif key == "fullscreen":
+                val = "开" if st["fullscreen"] else "关"
+            elif key == "controls":
+                val = "进入设置"
             else:
                 val = f"{int(st['volume'] * 100)}%"
             sel = i == self.settings_idx
-            ui.text(s, f, label, 18, (430, y), color=ACCENT if sel else TEXT_MAIN, shadow=False)
+            ui.text(s, f, label, 17, (430, y), color=ACCENT if sel else TEXT_MAIN, shadow=False)
             vcol = ACCENT if sel else ACCENT2
-            ui.text(s, f, ("▸ " if sel else "") + val, 22, (770, y - 2),
-                    color=vcol, anchor="midright")
+            ui.text(s, f, ("▸ " if sel else "") + val, 19, (850, y + 9),
+                     color=vcol, anchor="midright")
             if sel:
-                pygame.draw.rect(s, (ACCENT2 + (60,)), pygame.Rect(418, y - 16, 470, 34), 1, border_radius=8)
-            y += 46
-        ui.text(s, f, "← → 调整/切换    ↑ ↓ 选择   Esc 返回", 15, (640, 578),
+                pygame.draw.rect(s, ACCENT2, pygame.Rect(418, y - 10, 444, 34), 1, border_radius=8)
+            y += 40
+        ui.text(s, f, "← → 调整/切换    ↑ ↓ 选择   Esc 返回", 15, (640, 598),
                 color=TEXT_DIM, anchor="center", shadow=False)
-        ui.text(s, f, "背景图支持 png / jpg，自动裁剪铺满窗口", 14, (640, 600),
+        ui.text(s, f, "F11 / Alt+Enter 可随时全屏；全屏时 Esc 返回窗口", 14, (640, 624),
                 color=TEXT_DIM, anchor="center", shadow=False)
-        self.buttons = [ui.Button(pygame.Rect(540, 622, 200, 46), "返回", "back_settings")]
+        self.buttons = [ui.Button(pygame.Rect(540, 646, 200, 44), "返回", "back_settings")]
         self.buttons[0].draw(s, f)
+
+    def _draw_keybinds(self) -> None:
+        s, f = self.screen, self.fonts
+        tmp = pygame.Surface(s.get_size(), pygame.SRCALPHA)
+        pygame.draw.rect(tmp, (5, 6, 16, 205), (0, 0, WIN_W, WIN_H))
+        s.blit(tmp, (0, 0))
+        ui.panel(s, pygame.Rect(270, 82, 740, 632))
+        ui.text(s, f, "自定义键位", 34, (640, 116), color=ACCENT,
+                anchor="center", bold=True)
+        ui.text(s, f, "选择动作后按 Enter，再按下新按键；冲突键位会自动交换",
+                14, (640, 152), color=TEXT_DIM, anchor="center", shadow=False)
+        actions = list(KEYBIND_LABELS)
+        for i, action in enumerate(actions):
+            col, row = i // 7, i % 7
+            rect = pygame.Rect(310 + col * 340, 188 + row * 52, 320, 42)
+            selected = i == self.keybind_idx
+            fill = (31, 40, 82, 220) if selected else (15, 20, 45, 175)
+            border = ACCENT if selected else (100, 125, 210, 65)
+            ui.panel(s, rect, fill=fill, border=border, radius=9)
+            ui.text(s, f, KEYBIND_LABELS[action], 16, (rect.x + 15, rect.centery),
+                    color=TEXT_MAIN, anchor="midleft", shadow=False)
+            key_name = pygame.key.name(self._key(action)).upper()
+            ui.text(s, f, key_name, 16, (rect.right - 15, rect.centery),
+                    color=ACCENT if selected else ACCENT2, anchor="midright", bold=selected)
+        if self.binding_capture:
+            pygame.draw.rect(tmp, (0, 0, 0, 0), (0, 0, 1, 1))
+            ui.panel(s, pygame.Rect(380, 326, 520, 148), fill=(12, 18, 46, 245),
+                     border=ACCENT, radius=16)
+            ui.text(s, f, f"正在设置：{KEYBIND_LABELS[self.binding_capture]}", 23,
+                    (640, 364), color=TEXT_MAIN, anchor="center", bold=True)
+            ui.text(s, f, "请按下新按键", 30, (640, 410), color=ACCENT,
+                    anchor="center", bold=True)
+            ui.text(s, f, "Esc 取消", 14, (640, 450), color=TEXT_DIM,
+                    anchor="center", shadow=False)
+        ui.text(s, f, "↑ ↓ 选择   Enter 修改   Backspace 恢复当前默认   F2 全部恢复   Esc 返回",
+                14, (640, 681), color=TEXT_DIM, anchor="center", shadow=False)
+        self.buttons = []
