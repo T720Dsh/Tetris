@@ -1,0 +1,494 @@
+"""伪 3D 等距渲染器：方块挤出、幽灵、平台、粒子、光效、震屏、背景"""
+from __future__ import annotations
+import colorsys
+import math
+import random
+
+import pygame
+
+from .constants import (COLS, ROWS, CELL, CUBE_H,
+                        BOARD_CX, BOARD_CY, PIECE_COLORS, GHOST_ALPHA,
+                        GRID_ALPHA, BG_TOP, BG_BOT, ACCENT, ACCENT2,
+                        SKINS)
+
+TOP_ROW = -2  # 与 board.TOP_ROW 一致
+
+
+def _shade(c: tuple[int, int, int], f: float) -> tuple[int, int, int]:
+    return (max(0, min(255, int(c[0] * f))),
+            max(0, min(255, int(c[1] * f))),
+            max(0, min(255, int(c[2] * f))))
+
+
+def _sat(c: tuple[int, int, int], f: float) -> tuple[int, int, int]:
+    """按系数调整饱和度（0=灰，1=原色，>1=更艳）"""
+    h, s, v = colorsys.rgb_to_hsv(c[0] / 255.0, c[1] / 255.0, c[2] / 255.0)
+    s = max(0.0, min(1.0, s * f))
+    r, g, b = colorsys.hsv_to_rgb(h, s, v)
+    return (int(r * 255), int(g * 255), int(b * 255))
+
+
+def skin_face_colors(color: tuple[int, int, int], skin: dict) -> tuple:
+    """按皮肤计算 顶/东/南/描边 四色（饱和度先应用，再乘明暗系数）"""
+    base = _sat(color, skin["saturation"])
+    return (_shade(base, skin["top"]), _shade(base, skin["east"]),
+            _shade(base, skin["south"]), _shade(base, skin["edge"]))
+
+
+def draw_top_pattern(surf: pygame.Surface, pts: list[tuple[float, float]],
+                     skin: dict, color: tuple[int, int, int], x0: float, y0: float,
+                     x2: float, y2: float, top_y0: float, top_y2: float) -> None:
+    """顶面装饰图案（按皮肤），pts 为顶面四角 [A_top, B_top, C_top, D_top]"""
+    pat = skin.get("pattern")
+    if not pat:
+        return
+    w = x2 - x0
+    hgt = y2 - y0
+    cx = (x0 + x2) / 2.0
+    cy = (top_y0 + top_y2) / 2.0
+    if pat == "crystal":
+        # 中心菱形高光
+        hl = (255, 255, 255, 90)
+        tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+        pygame.draw.polygon(tmp, hl, [(cx, cy - hgt * 0.16), (cx + w * 0.10, cy),
+                                      (cx, cy + hgt * 0.16), (cx - w * 0.10, cy)])
+        surf.blit(tmp, (0, 0))
+    elif pat == "metal":
+        # 拉丝亮线
+        tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+        for k in (-0.06, 0.06):
+            yy = cy + hgt * k
+            pygame.draw.line(tmp, (255, 255, 255, 46),
+                             (x0 + w * 0.12, yy), (x2 - w * 0.12, yy), 1)
+        surf.blit(tmp, (0, 0))
+    elif pat == "pixel":
+        # 像素噪点（顶面画小方块点阵）
+        tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+        c_hi = _shade(color, 1.35)
+        for i in (-1, 0, 1):
+            for j in (-1, 0, 1):
+                if (i * j) != 0:
+                    continue
+                px = cx + i * w * 0.11
+                py = cy + j * hgt * 0.11
+                pygame.draw.rect(tmp, (*c_hi, 130), (px - 2, py - 2, 4, 4))
+        surf.blit(tmp, (0, 0))
+    elif pat == "candy":
+        # 左上高光圆点
+        tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+        hx, hy = x0 + w * 0.28, top_y0 + hgt * 0.26
+        pygame.draw.circle(tmp, (255, 255, 255, 70), (int(hx), int(hy)), 4)
+        surf.blit(tmp, (0, 0))
+
+
+def iso(c: float, r: float, h: float = 0.0) -> tuple[float, float]:
+    """棋盘坐标 -> 屏幕坐标（固定默认视角，HOLD/NEXT 预览等用）。h 为高度（格）。"""
+    sx = (c - r) * CELL
+    sy = (c + r) * CELL / 2.0 - h * CUBE_H
+    return sx, sy
+
+
+class Renderer:
+    def __init__(self):
+        self.yaw = 0.0      # 视角方位角（弧度）：0 = 默认右上等距，可 360° 旋转
+        self.pitch = 0.0    # 俯仰角（弧度）：>0 俯视，<0 仰视
+        # 场地包围盒 [0,COLS] x [TOP_ROW,ROWS] 的中心（u,v 坐标）
+        mid_c, mid_r = COLS / 2.0, (ROWS + TOP_ROW) / 2.0
+        self._u_mid = mid_c - mid_r
+        self._v_mid = mid_c + mid_r
+        self._glow_cache: dict[str, pygame.Surface] = {}
+        self.surf_off = (0.0, 0.0)   # 绘制到子表面时的坐标偏移
+        self.current_skin: dict = SKINS["neon"]
+        self.custom_bg: pygame.Surface | None = None
+        self._update_center()
+
+    def set_skin(self, name: str) -> None:
+        self.current_skin = SKINS.get(name, SKINS["neon"])
+
+    def load_custom_bg(self, path: str) -> bool:
+        """加载用户背景图并 cover 缩放为窗口尺寸（失败返回 False）"""
+        try:
+            img = pygame.image.load(path).convert()
+        except Exception:
+            try:
+                img = pygame.image.load(path)
+            except Exception:
+                return False
+        tw, th = 1280, 800
+        iw, ih = img.get_size()
+        scale = max(tw / iw, th / ih)
+        nw, nh = int(iw * scale) + 1, int(ih * scale) + 1
+        img = pygame.transform.smoothscale(img, (nw, nh))
+        x = (nw - tw) // 2
+        y = (nh - th) // 2
+        self.custom_bg = img.subsurface((x, y, tw, th)).copy()
+        return True
+
+    def _update_center(self) -> None:
+        """按当前视角重算场地中心偏移，保证任意角度下场地居中"""
+        cy, sy = math.cos(self.yaw), math.sin(self.yaw)
+        up = self._u_mid * cy - self._v_mid * sy
+        vp = self._u_mid * sy + self._v_mid * cy
+        self.ox = BOARD_CX - up * CELL
+        self.oy = BOARD_CY - vp * CELL / 2.0 * math.cos(self.pitch)
+
+    def set_view(self, yaw: float, pitch: float) -> None:
+        self.yaw = yaw
+        self.pitch = max(-0.30, min(1.00, pitch))
+        self._update_center()
+
+    def set_surface_offset(self, dx: float, dy: float) -> None:
+        self.surf_off = (dx, dy)
+
+    def to_screen(self, c: float, r: float, h: float = 0.0) -> tuple[float, float]:
+        u, v = c - r, c + r
+        cy, sy = math.cos(self.yaw), math.sin(self.yaw)
+        up = u * cy - v * sy
+        vp = u * sy + v * cy
+        sx = up * CELL
+        sy2 = vp * CELL / 2.0 * math.cos(self.pitch) - h * CUBE_H * math.cos(self.pitch)
+        return self.ox + sx - self.surf_off[0], self.oy + sy2 - self.surf_off[1]
+
+    def sort_key(self, c: float, r: float) -> tuple[float, float]:
+        """画家算法深度键：v' 大的靠前（后画），同深度按屏幕 x 排序"""
+        u, v = c - r, c + r
+        cy, sy = math.cos(self.yaw), math.sin(self.yaw)
+        vp = u * sy + v * cy
+        up = u * cy - v * sy
+        return vp, -up
+
+    # ------------------------------------------------------------ 基础图形
+    def _poly(self, surf: pygame.Surface, pts: list[tuple[float, float]],
+              color: tuple[int, int, int], alpha: int = 255) -> None:
+        if alpha < 255:
+            tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+            pygame.draw.polygon(tmp, (*color, alpha), [(int(x), int(y)) for x, y in pts])
+            surf.blit(tmp, (0, 0))
+        else:
+            pygame.draw.polygon(surf, color, [(int(x), int(y)) for x, y in pts])
+
+    def draw_cube(self, surf: pygame.Surface, c: float, r: float,
+                  color: tuple[int, int, int], alpha: int = 255,
+                  glow: bool = False, z: float = 0.0) -> None:
+        """画一个 (c,r) 位置的 1x1x1 方块，外观由 current_skin 决定。z：额外高度偏移（格）"""
+        skin = self.current_skin
+        if alpha == 255:
+            alpha = int(skin["alpha"])
+        x0, y0 = self.to_screen(c, r, z)
+        x1, y1 = self.to_screen(c + 1, r, z)
+        x2, y2 = self.to_screen(c + 1, r + 1, z)
+        x3, y3 = self.to_screen(c, r + 1, z)
+        top_y0 = y0 - CUBE_H
+        top_y1 = y1 - CUBE_H
+        top_y2 = y2 - CUBE_H
+        top_y3 = y3 - CUBE_H
+
+        col_top, col_east, col_south, col_edge = skin_face_colors(color, skin)
+        top_pts = [(x0, top_y0), (x1, top_y1), (x2, top_y2), (x3, top_y3)]
+
+        # 东面（c+1 棱）与南面（r+1 棱）的覆盖顺序随视角方位角翻转：
+        # 视角转到背面时，原本的"南面"移到左边，需先画
+        east_first = math.cos(self.yaw) >= 0
+        if east_first:
+            # 东面（右侧，x=c+1 棱）：B -> C -> C_top -> B_top
+            self._poly(surf, [(x1, y1), (x2, y2), (x2, top_y2), (x1, top_y1)],
+                       col_east, alpha)
+            # 南面（左侧，y=r+1 棱）：C -> D -> D_top -> C_top
+            self._poly(surf, [(x2, y2), (x3, y3), (x3, top_y3), (x2, top_y2)],
+                       col_south, alpha)
+        else:
+            self._poly(surf, [(x2, y2), (x3, y3), (x3, top_y3), (x2, top_y2)],
+                       col_south, alpha)
+            self._poly(surf, [(x1, y1), (x2, y2), (x2, top_y2), (x1, top_y1)],
+                       col_east, alpha)
+        # 顶面（最亮）：A_top -> B_top -> C_top -> D_top
+        self._poly(surf, top_pts, col_top, alpha)
+        draw_top_pattern(surf, top_pts, skin, color, x0, y0, x2, y2, top_y0, top_y2)
+
+        ew = skin.get("edge_w", 1)
+        if alpha == 255 and ew >= 1:
+            # 细描边增加锐利感
+            for a, b in [(top_pts[0], top_pts[1]), (top_pts[1], top_pts[2]),
+                         (top_pts[2], top_pts[3]), (top_pts[3], top_pts[0]),
+                         ((x1, y1), (x1, top_y1)), ((x2, y2), (x2, top_y2)),
+                         ((x3, y3), (x3, top_y3))]:
+                pygame.draw.line(surf, col_edge, a, b, ew)
+
+        if glow or skin.get("glow"):
+            g = self._glow(color)
+            cx = (x0 + x2) / 2
+            cy = (top_y0 + top_y2) / 2
+            surf.blit(g, (cx - g.get_width() / 2, cy - g.get_height() / 2),
+                      special_flags=pygame.BLEND_ADD)
+
+    def _glow(self, color: tuple[int, int, int]) -> pygame.Surface:
+        key = str(color)
+        if key not in self._glow_cache:
+            size = 96
+            g = pygame.Surface((size, size), pygame.SRCALPHA)
+            for i in range(size // 2, 0, -1):
+                a = int(50 * (1 - i / (size / 2)) ** 2)
+                pygame.draw.circle(g, (*color, a), (size // 2, size // 2), i)
+            self._glow_cache[key] = g
+        return self._glow_cache[key]
+
+    # ------------------------------------------------------------ 幽灵
+    def draw_ghost(self, surf: pygame.Surface, cells: list[tuple[int, int]],
+                   color: tuple[int, int, int]) -> None:
+        for c, r in cells:
+            x0, y0 = self.to_screen(c, r)
+            x1, y1 = self.to_screen(c + 1, r)
+            x2, y2 = self.to_screen(c + 1, r + 1)
+            x3, y3 = self.to_screen(c, r + 1)
+            top_y0 = y0 - CUBE_H
+            top_y1 = y1 - CUBE_H
+            top_y2 = y2 - CUBE_H
+            top_y3 = y3 - CUBE_H
+            col = (*color, GHOST_ALPHA)
+            tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+            pygame.draw.polygon(tmp, col, [(x0, top_y0), (x1, top_y1), (x2, top_y2), (x3, top_y3)])
+            pygame.draw.line(tmp, (*color, GHOST_ALPHA + 60), (x0, top_y0), (x1, top_y1), 1)
+            pygame.draw.line(tmp, (*color, GHOST_ALPHA + 60), (x1, top_y1), (x2, top_y2), 1)
+            pygame.draw.line(tmp, (*color, GHOST_ALPHA + 60), (x2, top_y2), (x3, top_y3), 1)
+            pygame.draw.line(tmp, (*color, GHOST_ALPHA + 60), (x0, top_y0), (x3, top_y3), 1)
+            pygame.draw.line(tmp, (*color, GHOST_ALPHA + 60), (x1, top_y1), (x1, y1), 1)
+            pygame.draw.line(tmp, (*color, GHOST_ALPHA + 60), (x2, y2), (x2, top_y2), 1)
+            pygame.draw.line(tmp, (*color, GHOST_ALPHA + 60), (x3, y3), (x3, top_y3), 1)
+            surf.blit(tmp, (0, 0))
+
+    # ------------------------------------------------------------ 平台与地面
+    def draw_floor(self, surf: pygame.Surface) -> None:
+        """场地下方的透视地面网格（画在最后层）"""
+        x0, y0 = self.to_screen(0, TOP_ROW)
+        x1, y1 = self.to_screen(COLS, TOP_ROW)
+        x2, y2 = self.to_screen(COLS, ROWS)
+        x3, y3 = self.to_screen(0, ROWS)
+        tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+        # 地面暗色渐变（透视感：远处更暗）
+        for i in range(14):
+            t = i / 14
+            y_top = y0 + (y2 - y0) * t
+            y_bot = y0 + (y2 - y0) * (t + 1 / 14)
+            col = (20, 26, 60, int(36 + 40 * t))
+            pygame.draw.polygon(tmp, col, [(x0 + (x2 - x0) * t, y_top),
+                                           (x1 + (x2 - x1) * t, y_top),
+                                           (x1 + (x2 - x1) * (t + 1 / 14), y_bot),
+                                           (x0 + (x2 - x0) * (t + 1 / 14), y_bot)])
+        # 地面网格线（等距方向）
+        for i in range(COLS + ROWS + 4):
+            k = i - 11
+            a = self.to_screen(k, TOP_ROW - 3)
+            b = self.to_screen(k - 4, ROWS)
+            pygame.draw.line(tmp, (90, 110, 210, 26), (a[0], a[1]), (b[0], b[1]), 1)
+        for i in range(COLS + ROWS + 4):
+            k = i - 11
+            a = self.to_screen(COLS + 3, k)
+            b = self.to_screen(-4, k + 4)
+            pygame.draw.line(tmp, (90, 110, 210, 26), (a[0], a[1]), (b[0], b[1]), 1)
+        surf.blit(tmp, (0, 0))
+
+    def draw_platform(self, surf: pygame.Surface) -> None:
+        """悬浮平台：半透明厚板 + 顶面网格"""
+        x0, y0 = self.to_screen(0, TOP_ROW)
+        x1, y1 = self.to_screen(COLS, TOP_ROW)
+        x2, y2 = self.to_screen(COLS, ROWS)
+        x3, y3 = self.to_screen(0, ROWS)
+        # 加一圈外扩
+        e = 0.6
+        x0, y0 = self.to_screen(-e, TOP_ROW - e)
+        x1, y1 = self.to_screen(COLS + e, TOP_ROW - e)
+        x2, y2 = self.to_screen(COLS + e, ROWS + e)
+        x3, y3 = self.to_screen(-e, ROWS + e)
+        side = 16
+
+        tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+        # 侧面（南、东）
+        pygame.draw.polygon(tmp, (30, 40, 90, 200),
+                            [(x1, y1), (x2, y2), (x2, y2 + side), (x1, y1 + side)])
+        pygame.draw.polygon(tmp, (40, 52, 110, 200),
+                            [(x2, y2), (x3, y3), (x3, y3 + side), (x2, y2 + side)])
+        # 顶面
+        pygame.draw.polygon(tmp, (46, 60, 128, 170),
+                            [(x0, y0), (x1, y1), (x2, y2), (x3, y3)])
+        # 顶面网格
+        for c in range(COLS + 1):
+            a = self.to_screen(c, TOP_ROW - e)
+            b = self.to_screen(c, ROWS + e)
+            pygame.draw.line(tmp, (150, 170, 255, GRID_ALPHA + 18), (a[0], a[1]), (b[0], b[1]), 1)
+        for r in range(TOP_ROW - 1, ROWS + 1):
+            a = self.to_screen(-e, r)
+            b = self.to_screen(COLS + e, r)
+            pygame.draw.line(tmp, (150, 170, 255, GRID_ALPHA + 18), (a[0], a[1]), (b[0], b[1]), 1)
+        # 边框高光
+        pygame.draw.polygon(tmp, (170, 190, 255, 70),
+                            [(x0, y0), (x1, y1), (x2, y2), (x3, y3)], 2)
+        surf.blit(tmp, (0, 0))
+
+    # ------------------------------------------------------------ 粒子
+    def draw_particles(self, surf: pygame.Surface, particles: list) -> None:
+        for p in particles:
+            a = max(0, min(255, int(255 * p["life"] / p["t0"])))
+            size = max(2, int(p["size"] * (0.6 + 0.4 * p["life"] / p["t0"])))
+            col = p["color"]
+            tmp = pygame.Surface((size * 2 + 4, size * 2 + 4), pygame.SRCALPHA)
+            pygame.draw.circle(tmp, (*col, a), (size + 2, size + 2), size)
+            surf.blit(tmp, (p["x"] - size - 2, p["y"] - size - 2),
+                      special_flags=pygame.BLEND_ADD)
+
+    def draw_ring(self, surf: pygame.Surface, cx: float, cy: float,
+                  radius: float, alpha: int, color: tuple[int, int, int]) -> None:
+        tmp = pygame.Surface((int(radius * 2) + 8, int(radius * 2) + 8), pygame.SRCALPHA)
+        pygame.draw.circle(tmp, (*color, alpha), (int(radius) + 4, int(radius) + 4),
+                           int(radius), 2)
+        surf.blit(tmp, (cx - radius - 4, cy - radius - 4), special_flags=pygame.BLEND_ADD)
+
+    def piece_shadow(self, surf: pygame.Surface, c: float, r: float, w: int, h: int) -> None:
+        """活动方块在落点处的软阴影"""
+        cx, cy = self.to_screen(c + w / 2, r + h / 2)
+        tmp = pygame.Surface((140, 60), pygame.SRCALPHA)
+        pygame.draw.ellipse(tmp, (0, 0, 10, 90), (10, 10, 120, 40))
+        surf.blit(tmp, (cx - 70, cy + CUBE_H * 0.55 - 30))
+
+
+def make_particles_for_clear(renderer: Renderer, cells: list[tuple[int, int]],
+                             color: tuple[int, int, int], rng: random.Random,
+                             burst: int = 8) -> list[dict]:
+    pts = []
+    for c, r in cells:
+        cx, cy = renderer.to_screen(c + 0.5, r + 0.5)
+        for _ in range(burst):
+            ang = rng.uniform(0, math.tau)
+            spd = rng.uniform(1.5, 7.0)
+            pts.append({
+                "x": cx + rng.uniform(-8, 8),
+                "y": cy + rng.uniform(-10, 4),
+                "vx": math.cos(ang) * spd,
+                "vy": math.sin(ang) * spd - 2.0,
+                "life": rng.uniform(0.45, 0.95),
+                "t0": 0.9,
+                "size": rng.uniform(2, 5),
+                "color": color,
+            })
+    return pts
+
+
+def update_particles(particles: list, dt: float) -> None:
+    for p in particles:
+        p["life"] -= dt
+        p["x"] += p["vx"] * 60 * dt
+        p["y"] += p["vy"] * 60 * dt
+        p["vy"] += 0.12 * 60 * dt
+    particles[:] = [p for p in particles if p["life"] > 0]
+
+
+# ---------------------------------------------------------------- 背景主题
+_W, _H = 1280, 800
+
+
+def _bg_base(surf: pygame.Surface, top: tuple, bot: tuple) -> None:
+    """垂直渐变基座（整块覆盖，防残影）"""
+    for y in range(0, _H, 4):
+        t = y / _H
+        c = (int(top[0] + (bot[0] - top[0]) * t),
+             int(top[1] + (bot[1] - top[1]) * t),
+             int(top[2] + (bot[2] - top[2]) * t))
+        pygame.draw.rect(surf, c, (0, y, _W, 4))
+
+
+def _bg_blit(surf: pygame.Surface, s: pygame.Surface, x: int, y: int) -> None:
+    surf.blit(s, (x, y))
+
+
+def _stars(surf: pygame.Surface, rng: random.Random, n: int, a_max: int = 150,
+           y_span: tuple[int, int] = (0, 500)) -> None:
+    tmp = pygame.Surface((_W, _H), pygame.SRCALPHA)
+    for _ in range(n):
+        x = rng.uniform(0, _W)
+        y = rng.uniform(*y_span)
+        a = rng.randint(30, a_max)
+        r = rng.choice((1, 1, 2))
+        pygame.draw.circle(tmp, (255, 255, 255, a), (int(x), int(y)), r)
+    surf.blit(tmp, (0, 0))
+
+
+def _nebula_blob(surf: pygame.Surface, cx: float, cy: float, r: float,
+                 color: tuple[int, int, int], a: int) -> None:
+    tmp = pygame.Surface((int(r * 2) + 4, int(r * 2) + 4), pygame.SRCALPHA)
+    for i in range(int(r), 0, -1):
+        alpha = int(a * (1 - i / r) ** 2)
+        pygame.draw.circle(tmp, (*color, alpha), (int(r) + 2, int(r) + 2), i)
+    surf.blit(tmp, (int(cx - r), int(cy - r)))
+
+
+def draw_bg_theme(surf: pygame.Surface, theme: str, t: float,
+                  custom_bg: pygame.Surface | None = None, rng: random.Random | None = None) -> None:
+    """按主题绘制全屏背景。t：动画时间（秒）；custom_bg：自定义图片表面"""
+    rng = rng or random.Random(7)
+    if theme == "custom" and custom_bg is not None:
+        surf.blit(custom_bg, (0, 0))
+        tmp = pygame.Surface((_W, _H), pygame.SRCALPHA)
+        pygame.draw.rect(tmp, (4, 6, 16, 130), (0, 0, _W, _H))
+        surf.blit(tmp, (0, 0))
+        return
+    if theme == "nebula":
+        _bg_base(surf, (22, 12, 58), (6, 6, 22))
+        _nebula_blob(surf, 250 + 30 * math.sin(t * 0.2), 180, 240, (120, 40, 220), 40)
+        _nebula_blob(surf, 1020 + 24 * math.sin(t * 0.15 + 2), 220, 280, (30, 60, 200), 42)
+        _nebula_blob(surf, 640, 90, 180, (200, 60, 120), 26)
+        _stars(surf, rng, 130)
+        return
+    if theme == "city":
+        _bg_base(surf, (10, 14, 44), (4, 5, 18))
+        _stars(surf, rng, 70, a_max=90, y_span=(0, 320))
+        # 城市剪影：两排建筑 + 霓虹窗点
+        tmp = pygame.Surface((_W, _H), pygame.SRCALPHA)
+        r2 = random.Random(11)
+        horizon = 560
+        for row in range(2):
+            base_y = horizon + row * 90
+            x = -20
+            while x < _W:
+                w = r2.randint(50, 120)
+                h = r2.randint(60, 150) if row == 0 else r2.randint(110, 210)
+                col = (12, 16, 40, 235) if row == 0 else (6, 8, 26, 235)
+                pygame.draw.rect(tmp, col, (x, base_y - h, w, h + 20))
+                for wx in range(x + 8, x + w - 8, 16):
+                    for wy in range(base_y - h + 8, base_y - 6, 18):
+                        if r2.random() < 0.30:
+                            pygame.draw.rect(tmp, (255, 200, 80, 150), (wx, wy, 5, 7))
+                x += w + r2.randint(6, 24)
+        surf.blit(tmp, (0, 0))
+        return
+    if theme == "aurora":
+        _bg_base(surf, (8, 16, 40), (4, 6, 20))
+        _stars(surf, rng, 110, a_max=120)
+        tmp = pygame.Surface((_W, _H), pygame.SRCALPHA)
+        for k, (col, base_y, amp) in enumerate([
+                ((60, 255, 160, 26), 120, 46), ((120, 120, 255, 22), 180, 62),
+                ((255, 120, 200, 16), 60, 40)]):
+            pts = []
+            for x in range(-40, _W + 40, 40):
+                y = base_y + amp * math.sin((x + k * 120) * 0.012 + t * 0.6 + k)
+                pts.append((x, y))
+            for i in range(len(pts) - 1):
+                x1, y1 = pts[i]
+                x2, y2 = pts[i + 1]
+                pygame.draw.line(tmp, col, (x1, y1), (x2, y2), 8)
+        surf.blit(tmp, (0, 0), special_flags=pygame.BLEND_ADD)
+        return
+    if theme == "grid":
+        _bg_base(surf, (8, 10, 30), (4, 5, 16))
+        tmp = pygame.Surface((_W, _H), pygame.SRCALPHA)
+        cx, cy = _W // 2, 420
+        for i in range(12):
+            r = 90 + i * 55
+            a = max(0, int(70 * (1 - i / 12)))
+            pygame.draw.ellipse(tmp, (0, 180, 255, a), (cx - r, cy - r * 0.4, r * 2, r * 0.8), 1)
+        for y in range(0, 8):
+            yy = cy + y * 60
+            a = max(0, int(60 * (1 - y / 8)))
+            pygame.draw.line(tmp, (90, 130, 255, a), (0, yy), (_W, yy), 1)
+        surf.blit(tmp, (0, 0))
+        _stars(surf, rng, 60, a_max=80)
+        return
+    # default：深蓝霓虹（由 game.draw_background 绘制渐变与尘埃）

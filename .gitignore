@@ -1,0 +1,23 @@
+# 构建产物
+build/
+dist/
+*.spec
+pyi_tmp/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 运行时数据（每个玩家自己生成）
+records.json
+settings.json
+tests/_smoke_records.json
+tests/settings.json
+
+# 临时文件
+*_test.png
+tests/d*_bg.png
+tests/d*_menu.png
+tests/d*_game.png
+tests/_test_bg.png
