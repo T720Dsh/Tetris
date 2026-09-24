@@ -1,5 +1,14 @@
 # TETRIS 3D RUSH · 伪 3D 竞速俄罗斯方块
 
+<p align="center">
+<a href="https://github.com/T720Dsh/Tetris/releases/download/v1.0.0/Tetris3DRush-win64.zip">
+<img alt="Download" src="https://img.shields.io/badge/下载%20Windows%20版-ZIP-brightgreen?style=for-the-badge&logo=windows11&logoColor=white">
+</a>
+</p>
+
+> 点击上方按钮即可下载 **Windows 版 zip 包**（约 28MB，解压后双击 `Tetris3DRush.exe` 直接玩，无需安装任何环境）；
+> 需要看源码 / 自己跑开发版请往下滚动。
+
 以竞速为核心的现代俄罗斯方块，**Python + Pygame** 实现。玩法特性对标现代俄罗斯方块，但
 **界面与呈现完全独立**：核心创新是**伪 3D 等距立体场地**——方块以带三面明暗、辉光与软阴影的
 立方体呈现，配合粒子爆裂、震屏、冲击波与危险告警，在保留竞速清晰度的前提下把场地"玩"出立体感。
