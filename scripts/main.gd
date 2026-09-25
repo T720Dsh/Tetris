@@ -36,8 +36,10 @@ var music_bus := "Master"
 
 
 func _ready() -> void:
-	font = SystemFont.new()
-	font.font_names = PackedStringArray(["Microsoft YaHei", "微软雅黑", "Segoe UI", "sans-serif"])
+	font = load("res://fonts/msyh.ttc") as Font
+	if font == null:
+		font = SystemFont.new()
+		font.font_names = PackedStringArray(["Microsoft YaHei", "微软雅黑", "Segoe UI", "sans-serif"])
 
 	bg = Background3D.new()
 	add_child(bg)
