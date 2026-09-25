@@ -57,6 +57,10 @@ func _ready() -> void:
 	to_menu()
 	rng.randomize()
 
+	var autoplay := OS.get_environment("TETRIS_AUTO_PLAY")
+	if autoplay != "":
+		_autoplay(autoplay.to_float())
+
 	var shot := OS.get_environment("TETRIS_SHOT")
 	if shot != "":
 		_auto_shot(shot)
@@ -73,7 +77,36 @@ func _ready() -> void:
 		print("SHOT_SAVED ", shot2)
 
 
-# 调试：延时截屏保存（TETRIS_SHOT 环境变量指定路径）
+# 调试：自动对局冒烟（模拟键盘输入，验证输入链路）
+func _autoplay(seconds: float) -> void:
+	start_game("sprint40")
+	var steps := int(seconds * 60.0)
+	for i in range(steps):
+		await get_tree().process_frame
+		if i == 82:
+			board.try_rotate(1)
+		elif i == 88:
+			board.try_move(-1, 0)
+		elif i == 92:
+			board.try_move(1, 0)
+		elif i == 96:
+			board.hard_drop()
+			board.lock()
+			_on_lock_event(board.last_event)
+		elif i == 108:
+			board.do_hold()
+		elif i == 118:
+			board.try_rotate(-1)
+			board.try_move(-1, 0)
+			_render()
+		if i % 30 == 0:
+			print("AUTOPLAY frame ", i, " pieces=", board.pieces_placed if board != null else -1,
+				" lines=", board.lines if board != null else -1)
+	print("AUTOPLAY DONE pieces=", board.pieces_placed if board != null else -1,
+		" lines=", board.lines if board != null else -1)
+	to_menu()
+
+
 func _auto_shot(path: String) -> void:
 	for i in range(6):
 		await get_tree().process_frame
@@ -389,8 +422,43 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if state != "playing":
 		return
-	if not (event is InputEventKey) or not event.pressed:
+	# 游戏按键统一在 _process 查询 Input 状态（见 _handle_just_pressed）
+
+
+func _try_rotate(dir: int) -> void:
+	if board.try_rotate(dir):
+		play_sfx("rotate")
+		if board.piece.grounded:
+			board.reset_lock()
+		_render()
+
+
+# ------------------------------------------------------------ 更新
+func _process(delta: float) -> void:
+	if state == "countdown":
+		countdown -= delta
+		if countdown <= 0.0:
+			state = "playing"
+			game_started = true
+			board.update(maxf(delta, 0.001))
 		return
+	if state == "playing":
+		elapsed += delta
+		_handle_just_pressed()
+		_handle_move_input(delta)
+		_handle_soft_drop(delta)
+		var before := board.pieces_placed
+		board.update(delta)
+		if board.pieces_placed != before and not board.game_over:
+			_on_lock_event(board.last_event)
+		_check_end()
+		_render()
+		hud.update_hud()
+	elif state == "paused":
+		pass
+
+
+func _handle_just_pressed() -> void:
 	if Input.is_action_just_pressed("rotate_cw"):
 		_try_rotate(1)
 	elif Input.is_action_just_pressed("rotate_ccw"):
@@ -419,38 +487,6 @@ func _unhandled_input(event: InputEvent) -> void:
 		camera.reset_view()
 	elif Input.is_action_just_pressed("view_front"):
 		camera.front_view()
-
-
-func _try_rotate(dir: int) -> void:
-	if board.try_rotate(dir):
-		play_sfx("rotate")
-		if board.piece.grounded:
-			board.reset_lock()
-		_render()
-
-
-# ------------------------------------------------------------ 更新
-func _process(delta: float) -> void:
-	if state == "countdown":
-		countdown -= delta
-		if countdown <= 0.0:
-			state = "playing"
-			game_started = true
-			board.update(maxf(delta, 0.001))
-		return
-	if state == "playing":
-		elapsed += delta
-		_handle_move_input(delta)
-		_handle_soft_drop(delta)
-		var before := board.pieces_placed
-		board.update(delta)
-		if board.pieces_placed != before and not board.game_over:
-			_on_lock_event(board.last_event)
-		_check_end()
-		_render()
-		hud.update_hud()
-	elif state == "paused":
-		pass
 
 
 func _handle_move_input(delta: float) -> void:
