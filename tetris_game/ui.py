@@ -8,31 +8,37 @@ from .constants import (WIN_W, WIN_H, TEXT_MAIN, TEXT_DIM, ACCENT, ACCENT2,
                         PANEL_FILL, PANEL_BORDER, DANGER, GOOD, MODE_NAME,
                         MODE_DESC)
 
-FONT_CANDIDATES = [
+FONT_REGULAR_CANDIDATES = [
     r"C:\Windows\Fonts\msyh.ttc",
-    r"C:\Windows\Fonts\msyhbd.ttc",
     r"C:\Windows\Fonts\simhei.ttf",
     r"C:\Windows\Fonts\simsun.ttc",
     "/System/Library/Fonts/PingFang.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
 ]
+FONT_BOLD_CANDIDATES = [
+    r"C:\Windows\Fonts\msyhbd.ttc",
+    r"C:\Windows\Fonts\simhei.ttf",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+]
 
 
 class Fonts:
     def __init__(self):
-        path = next((p for p in FONT_CANDIDATES if os.path.exists(p)), None)
-        self.family = path
+        self.regular = next((p for p in FONT_REGULAR_CANDIDATES if os.path.exists(p)), None)
+        self.bold = next((p for p in FONT_BOLD_CANDIDATES if os.path.exists(p)), self.regular)
         self._cache: dict[tuple[str, int], pygame.font.Font] = {}
 
     def get(self, size: int, bold: bool = False) -> pygame.font.Font:
-        key = (f"{self.family}|{bold}", size)
+        family = self.bold if bold else self.regular
+        key = (f"{family}|{bold}", size)
         if key not in self._cache:
-            if self.family:
-                f = pygame.font.Font(self.family, size)
-                f.set_bold(bold)
+            if family:
+                f = pygame.font.Font(family, size)
             else:
                 f = pygame.font.Font(None, size)
+                f.set_bold(bold)
             self._cache[key] = f
         return self._cache[key]
 
@@ -54,7 +60,7 @@ def panel(surf: pygame.Surface, rect: pygame.Rect, fill=PANEL_FILL,
 
 def text(surf: pygame.Surface, fonts: Fonts, s: str, size: int, pos: tuple[int, int],
          color=TEXT_MAIN, anchor: str = "topleft", bold: bool = False,
-         shadow: bool = True, alpha: int = 255) -> pygame.Rect:
+         shadow: bool = False, alpha: int = 255) -> pygame.Rect:
     f = fonts.get(size, bold)
     img = f.render(s, True, color)
     if alpha < 255:

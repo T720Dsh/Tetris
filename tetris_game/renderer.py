@@ -91,7 +91,7 @@ def iso(c: float, r: float, h: float = 0.0) -> tuple[float, float]:
 class Renderer:
     def __init__(self):
         self.yaw = 0.0      # 视角方位角（弧度）：0 = 默认右上等距，可 360° 旋转
-        self.pitch = 0.0    # 俯仰角（弧度）：>0 俯视，<0 仰视
+        self.pitch = 0.0    # 相对 30° 默认仰角：>0 俯视，<0 接近地平视角
         # 场地包围盒 [0,COLS] x [TOP_ROW,ROWS] 的中心（u,v 坐标）
         mid_c, mid_r = COLS / 2.0, (ROWS + TOP_ROW) / 2.0
         self._u_mid = mid_c - mid_r
@@ -129,13 +129,31 @@ class Renderer:
         cy, sy = math.cos(self.yaw), math.sin(self.yaw)
         up = self._u_mid * cy - self._v_mid * sy
         vp = self._u_mid * sy + self._v_mid * cy
+        ground_y, _ = self._camera_factors()
         self.ox = BOARD_CX - up * CELL
-        self.oy = BOARD_CY - vp * CELL / 2.0 * math.cos(self.pitch)
+        self.oy = BOARD_CY - vp * CELL * ground_y
+
+    def _camera_factors(self) -> tuple[float, float]:
+        """Return ground-depth and cube-height projection factors.
+
+        The old formula multiplied both by cos(pitch), so dragging toward a
+        front/top view flattened the entire scene. A real elevation model makes
+        the board approach a readable classic front view while cube height fades
+        naturally as the camera moves overhead.
+        """
+        elevation = math.radians(30.0) + self.pitch
+        ground_y = math.sin(elevation)
+        height_y = math.cos(elevation) / math.cos(math.radians(30.0))
+        return ground_y, height_y
 
     def set_view(self, yaw: float, pitch: float) -> None:
-        self.yaw = yaw
-        self.pitch = max(-0.30, min(1.00, pitch))
+        self.yaw = (yaw + math.pi) % math.tau - math.pi
+        self.pitch = max(math.radians(-25), min(math.radians(55), pitch))
         self._update_center()
+
+    def set_front_view(self) -> None:
+        """Classic readable front view: columns horizontal, rows vertical."""
+        self.set_view(-math.pi / 4.0, math.radians(55))
 
     def set_surface_offset(self, dx: float, dy: float) -> None:
         self.surf_off = (dx, dy)
@@ -146,7 +164,8 @@ class Renderer:
         up = u * cy - v * sy
         vp = u * sy + v * cy
         sx = up * CELL
-        sy2 = vp * CELL / 2.0 * math.cos(self.pitch) - h * CUBE_H * math.cos(self.pitch)
+        ground_y, height_y = self._camera_factors()
+        sy2 = vp * CELL * ground_y - h * CUBE_H * height_y
         return self.ox + sx - self.surf_off[0], self.oy + sy2 - self.surf_off[1]
 
     def sort_key(self, c: float, r: float) -> tuple[float, float]:
@@ -183,10 +202,10 @@ class Renderer:
         x1, y1 = self.to_screen(c + 1, r, z)
         x2, y2 = self.to_screen(c + 1, r + 1, z)
         x3, y3 = self.to_screen(c, r + 1, z)
-        top_y0 = y0 - CUBE_H
-        top_y1 = y1 - CUBE_H
-        top_y2 = y2 - CUBE_H
-        top_y3 = y3 - CUBE_H
+        _, top_y0 = self.to_screen(c, r, z + 1)
+        _, top_y1 = self.to_screen(c + 1, r, z + 1)
+        _, top_y2 = self.to_screen(c + 1, r + 1, z + 1)
+        _, top_y3 = self.to_screen(c, r + 1, z + 1)
 
         col_top, col_east, col_south, col_edge = skin_face_colors(color, skin)
         # Light comes from the upper-left of the camera.  Let side brightness react
@@ -257,10 +276,10 @@ class Renderer:
             x1, y1 = self.to_screen(c + 1, r)
             x2, y2 = self.to_screen(c + 1, r + 1)
             x3, y3 = self.to_screen(c, r + 1)
-            top_y0 = y0 - CUBE_H
-            top_y1 = y1 - CUBE_H
-            top_y2 = y2 - CUBE_H
-            top_y3 = y3 - CUBE_H
+            _, top_y0 = self.to_screen(c, r, 1)
+            _, top_y1 = self.to_screen(c + 1, r, 1)
+            _, top_y2 = self.to_screen(c + 1, r + 1, 1)
+            _, top_y3 = self.to_screen(c, r + 1, 1)
             col = (*color, GHOST_ALPHA)
             tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
             pygame.draw.polygon(tmp, col, [(x0, top_y0), (x1, top_y1), (x2, top_y2), (x3, top_y3)])
@@ -303,7 +322,8 @@ class Renderer:
         x1, y1 = self.to_screen(COLS + e, TOP_ROW - e)
         x2, y2 = self.to_screen(COLS + e, ROWS + e)
         x3, y3 = self.to_screen(-e, ROWS + e)
-        side = 16
+        _, height_y = self._camera_factors()
+        side = max(3, int(16 * height_y))
 
         tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
         # 侧面（南、东）

@@ -53,8 +53,10 @@ class DisplayManager:
         lw, lh = self.logical_size
         scale = min(ww / lw, wh / lh)
         size = (max(1, round(lw * scale)), max(1, round(lh * scale)))
+        # Nearest-neighbour presentation keeps text and one-pixel UI borders crisp.
+        # smoothscale made the entire interface visibly soft on 1080p/1440p displays.
         frame = (self.canvas if size == self.logical_size
-                 else self.pygame.transform.smoothscale(self.canvas, size))
+                 else self.pygame.transform.scale(self.canvas, size))
         self.window.fill((3, 5, 14))
         self.window.blit(frame, ((ww - size[0]) // 2, (wh - size[1]) // 2))
         self.pygame.display.flip()
@@ -80,7 +82,13 @@ def main() -> int:
     display = DisplayManager(pygame, WIN_W, WIN_H, headless)
     pygame.display.set_caption(TITLE)
 
-    records_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "records.json")
+    # In a PyInstaller one-file build __file__ points into a temporary extraction
+    # folder. Store records/settings next to the downloaded exe so remapped keys
+    # actually survive and remain usable after restart.
+    app_dir = (os.path.dirname(os.path.abspath(sys.executable))
+               if getattr(sys, "frozen", False)
+               else os.path.dirname(os.path.abspath(__file__)))
+    records_path = os.path.join(app_dir, "records.json")
     game = Game(display.canvas, records_path, fullscreen_toggle=display.toggle_fullscreen)
     if not headless and game.settings.get("fullscreen"):
         game.set_fullscreen_state(display.toggle_fullscreen(True))
@@ -108,7 +116,11 @@ def main() -> int:
                 fullscreen_shortcut = (event.key == pygame.K_F11 or
                                        (event.key == pygame.K_RETURN and
                                         event.mod & pygame.KMOD_ALT))
-                if fullscreen_shortcut:
+                capturing_key = (game.state == "keybinds" and
+                                 game.binding_capture is not None)
+                if capturing_key:
+                    game.on_key_down(event.key, event.mod)
+                elif fullscreen_shortcut:
                     game.set_fullscreen_state(display.toggle_fullscreen())
                 elif event.key == pygame.K_ESCAPE and display.fullscreen:
                     game.set_fullscreen_state(display.toggle_fullscreen(False))

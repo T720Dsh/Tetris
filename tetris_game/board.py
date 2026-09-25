@@ -2,7 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 
-from .constants import COLS, ROWS, HIDDEN_TOP, LOCK_DELAY, LOCK_MAX_RESET, GRAVITY_20G
+from .constants import COLS, ROWS, HIDDEN_TOP, LOCK_DELAY, LOCK_MAX_RESET, BASE_GRAVITY_CPS
 from .pieces import ALL_CELLS, t_spin_corners
 
 FULL_H = ROWS + HIDDEN_TOP          # 含隐藏行的总行数（负行号为隐藏区）
@@ -58,6 +58,7 @@ class Board:
         self.lock_resets = 0
         self.gravity_acc = 0.0
         self.drop_frac = 0.0            # 渲染用下落插值
+        self.gravity_scale_override: float | None = None  # 设置覆盖：模式重力倍率
         self.clock = 0.0                # 对局已进行秒数（无尽模式重力加速用）
         self.game_over = False
         self.marathon_clear = False
@@ -69,14 +70,17 @@ class Board:
         if self.mode == "marathon":
             s = (0.8 - (self.level - 1) * 0.007) ** (self.level - 1)   # 秒/格（指南公式）
             s = max(s, 0.015)
-            return dt / s
-        if self.mode == "endless":
+            gravity = dt / s
+        elif self.mode == "endless":
             # 每 20 秒升一级，重力持续加速（指南公式加速）
             lv = 1 + int(self.clock // 20)
             s = (0.8 - (lv - 1) * 0.007) ** (lv - 1)
             s = max(s, 0.015)
-            return dt / s
-        return GRAVITY_20G * dt
+            gravity = dt / s
+        else:
+            gravity = BASE_GRAVITY_CPS * dt
+        scale = 1.0 if self.gravity_scale_override is None else self.gravity_scale_override
+        return gravity * max(0.0, scale)
 
     # ------------------------------------------------------------ 垃圾行（奶酪模式）
     def seed_garbage(self, rows: int, rng) -> None:
@@ -215,7 +219,7 @@ class Board:
         p = self.piece
         g = self.gravity_per_frame(dt)
         if g >= 1.0:
-            # 20G：直接落到底
+            # 高重力：本帧至少下落一格，直接落到着地点
             if not p.grounded:
                 self.piece.y += self.drop_distance()
                 p.grounded = True

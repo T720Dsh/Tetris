@@ -83,8 +83,10 @@ def test_board_basic():
     check("左移后不出界", b.piece is not None and b.piece.x >= 0)
     r0 = b.piece.rot
     check("旋转成功", b.try_rotate(1) and b.piece.rot == (r0 + 1) % 4)
-    b.update(0.05)  # 20G 落地（短步长，避免直接触发锁定）
-    check("20G 落地", b.piece is not None and b.piece.grounded)
+    y_before = b.piece.y
+    b.update(0.05)
+    check("默认重力不会瞬间落地", b.piece is not None and not b.piece.grounded
+          and b.piece.y == y_before)
     before = b.pieces_placed
     b.hard_drop()
     ev = b.lock()
@@ -259,6 +261,12 @@ def test_new_modes_logic():
     g200 = b4.gravity_per_frame(1 / 60)
     check("无尽重力随时间加速", g0 < g20 <= g200, f"{g0:.3f}/{g20:.3f}/{g200:.3f}")
     check("无尽重力有下限", g200 < 1.0, f"g={g200:.3f}")
+
+    from tetris_game.constants import PIECE_COLORS
+    guideline = {"I": (0, 240, 240), "O": (240, 240, 0), "T": (160, 0, 240),
+                 "S": (0, 240, 0), "Z": (240, 0, 0), "J": (0, 0, 240),
+                 "L": (240, 160, 0)}
+    check("现代俄罗斯方块标准配色", PIECE_COLORS == guideline, str(PIECE_COLORS))
 
 
 if __name__ == "__main__":

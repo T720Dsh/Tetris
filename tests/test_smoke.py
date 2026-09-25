@@ -81,6 +81,7 @@ def test_new_modes():
     g.new_game("endless")
     g.update(4.0)
     b2 = g.board
+    b2.gravity_scale_override = None
     g1 = b2.gravity_per_frame(1 / 60)
     b2.clock = 100.0
     g2 = b2.gravity_per_frame(1 / 60)
@@ -220,10 +221,17 @@ def test_pause_and_restart():
     g.on_key_down(pygame.K_ESCAPE, 0)
     g._activate("settings")
     check("进入设置", g.state == "settings")
-    for _ in range(4):
-        g._settings_key(pygame.K_DOWN)
+    g.settings_idx = next(i for i, item in enumerate(g.settings_items) if item[0] == "volume")
     g._settings_key(pygame.K_RIGHT)
     check("音量调整生效", g.settings["volume"] > 0.7, f"vol={g.settings['volume']}")
+    g.settings_idx = next(i for i, item in enumerate(g.settings_items) if item[0] == "gravity_speed")
+    g.settings["gravity_speed"] = "very_slow"
+    g._settings_key(pygame.K_LEFT)
+    check("自动下落可关闭", g.settings["gravity_speed"] == "off"
+          and g.board.gravity_scale_override == 0.0)
+    g.settings["gravity_speed"] = "very_slow"
+    g.board.gravity_scale_override = 0.15
+    g.save_settings()
     g._settings_key(pygame.K_ESCAPE)
     check("设置返回暂停", g.state == "paused", f"state={g.state}")
     g._activate("restart")
@@ -315,6 +323,11 @@ def test_view_rotation():
     check("Q 键反向旋转", r.yaw < 0.05, f"yaw={r.yaw:.3f}")
     g.on_key_down(pygame.K_v, 0)
     check("V 键复位视角", r.yaw == 0.0, f"yaw={r.yaw}")
+    g.on_key_down(pygame.K_f, 0)
+    x_left, y_top = r.to_screen(0, 0)
+    x_right, y_bottom = r.to_screen(10, 20)
+    check("F 键进入正面视角", x_right > x_left and y_bottom > y_top
+          and r.pitch > math.radians(50), f"yaw={r.yaw:.3f} pitch={r.pitch:.3f}")
     # 180° 翻转后场地中心点 (5,9) 恒映射到 (BOARD_CX, BOARD_CY)
     r.set_view(math.pi, 0.0)
     x1, y1 = r.to_screen(5, 9)
@@ -350,12 +363,11 @@ def test_skins_and_backgrounds():
     g.renderer.set_skin("neon")
     # 设置界面循环切换材质/背景
     g.state = "settings"
-    for _ in range(5):
-        g.on_key_down(pygame.K_DOWN, 0)   # 定位到"方块材质"（第 5 项）
+    g.settings_idx = next(i for i, item in enumerate(g.settings_items) if item[0] == "skin")
     g.on_key_down(pygame.K_RIGHT, 0)   # 材质 -> 水晶
     check("设置切换材质", g.settings["skin"] == "crystal"
           and g.renderer.current_skin is SKINS["crystal"], g.settings["skin"])
-    g.on_key_down(pygame.K_DOWN, 0)
+    g.settings_idx = next(i for i, item in enumerate(g.settings_items) if item[0] == "bg_theme")
     g.on_key_down(pygame.K_RIGHT, 0)   # 背景 -> 星云
     check("设置切换背景", g.settings["bg_theme"] == "nebula", g.settings["bg_theme"])
     g.state = "playing"
