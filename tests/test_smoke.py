@@ -328,17 +328,24 @@ def test_view_rotation():
     x_right, y_bottom = r.to_screen(10, 20)
     check("F 键进入正面视角", x_right > x_left and y_bottom > y_top
           and r.pitch > math.radians(50), f"yaw={r.yaw:.3f} pitch={r.pitch:.3f}")
-    # 180° 翻转后场地中心点 (5,9) 恒映射到 (BOARD_CX, BOARD_CY)
+    # 180° 翻转后完整立体包围盒仍在中央裁切区内；垂直中心会为
+    # 方块高度/平台厚度留出少量光学补偿，不再强绑地面中点。
     r.set_view(math.pi, 0.0)
     x1, y1 = r.to_screen(5, 9)
     from tetris_game.constants import BOARD_CX, BOARD_CY
-    check("180° 视角场地居中", abs(x1 - BOARD_CX) < 1e-6 and abs(y1 - BOARD_CY) < 1e-6,
+    check("180° 视角场地居中", abs(x1 - BOARD_CX) < 1e-6 and abs(y1 - BOARD_CY) < 6,
           f"({x1:.1f},{y1:.1f}) vs ({BOARD_CX},{BOARD_CY})")
+    r.set_front_view()
+    bounds = r.playfield_bounds()
+    from tetris_game.game import SCENE_RECT
+    check("俯视完整场地不被裁切", SCENE_RECT.contains(bounds),
+          f"bounds={bounds} scene={SCENE_RECT} zoom={r.zoom:.3f}")
     # 拖拽旋转
     r.set_view(0.0, 0.0)
     g.drag_start((600, 400))
     g.drag_move((640, 420))
-    check("拖拽旋转生效", r.yaw > 0.0 and r.pitch > 0.0, f"yaw={r.yaw:.3f} pitch={r.pitch:.3f}")
+    check("拖拽采用自然轨道方向", r.yaw > 0.0 and r.pitch < 0.0,
+          f"yaw={r.yaw:.3f} pitch={r.pitch:.3f}")
     g.drag_end()
     g.drag_move((500, 300))   # 拖拽结束后不再响应
     check("拖拽结束停止旋转", r.yaw < 1.0, f"yaw={r.yaw:.3f}")

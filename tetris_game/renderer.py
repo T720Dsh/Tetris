@@ -5,6 +5,7 @@ import math
 import random
 
 import pygame
+import pygame.gfxdraw
 
 from .constants import (COLS, ROWS, CELL, CUBE_H,
                         BOARD_CX, BOARD_CY, PIECE_COLORS, GHOST_ALPHA,
@@ -92,14 +93,16 @@ class Renderer:
     def __init__(self):
         self.yaw = 0.0      # 视角方位角（弧度）：0 = 默认右上等距，可 360° 旋转
         self.pitch = 0.0    # 相对 30° 默认仰角：>0 俯视，<0 接近地平视角
-        # 场地包围盒 [0,COLS] x [TOP_ROW,ROWS] 的中心（u,v 坐标）
-        mid_c, mid_r = COLS / 2.0, (ROWS + TOP_ROW) / 2.0
-        self._u_mid = mid_c - mid_r
-        self._v_mid = mid_c + mid_r
+        self.zoom = 1.0
+        self.viewport = pygame.Rect(286, 88, 766, 584)
         self._glow_cache: dict[str, pygame.Surface] = {}
         self.surf_off = (0.0, 0.0)   # 绘制到子表面时的坐标偏移
         self.current_skin: dict = SKINS["neon"]
         self.custom_bg: pygame.Surface | None = None
+        self._update_center()
+
+    def set_viewport(self, rect: pygame.Rect) -> None:
+        self.viewport = pygame.Rect(rect)
         self._update_center()
 
     def set_skin(self, name: str) -> None:
@@ -124,14 +127,32 @@ class Renderer:
         self.custom_bg = img.subsurface((x, y, tw, th)).copy()
         return True
 
-    def _update_center(self) -> None:
-        """按当前视角重算场地中心偏移，保证任意角度下场地居中"""
+    def _project_raw(self, c: float, r: float, h: float = 0.0) -> tuple[float, float]:
         cy, sy = math.cos(self.yaw), math.sin(self.yaw)
-        up = self._u_mid * cy - self._v_mid * sy
-        vp = self._u_mid * sy + self._v_mid * cy
-        ground_y, _ = self._camera_factors()
-        self.ox = BOARD_CX - up * CELL
-        self.oy = BOARD_CY - vp * CELL * ground_y
+        u, v = c - r, c + r
+        up = u * cy - v * sy
+        vp = u * sy + v * cy
+        ground_y, height_y = self._camera_factors()
+        return up * CELL, vp * CELL * ground_y - h * CUBE_H * height_y
+
+    def _update_center(self) -> None:
+        """Fit the complete raised playfield inside the scene at every angle."""
+        e = 0.85
+        corners = [(-e, TOP_ROW - e), (COLS + e, TOP_ROW - e),
+                   (COLS + e, ROWS + e), (-e, ROWS + e)]
+        pts = [self._project_raw(c, r, h) for c, r in corners for h in (0.0, 1.15)]
+        min_x = min(x for x, _ in pts)
+        max_x = max(x for x, _ in pts)
+        min_y = min(y for _, y in pts)
+        max_y = max(y for _, y in pts)
+        # Leave room for the platform thickness, antialias fringe and shake.
+        avail_w = max(1.0, self.viewport.width - 42.0)
+        avail_h = max(1.0, self.viewport.height - 54.0)
+        span_w = max(1.0, max_x - min_x)
+        span_h = max(1.0, max_y - min_y + 18.0)
+        self.zoom = max(0.55, min(1.0, avail_w / span_w, avail_h / span_h))
+        self.ox = self.viewport.centerx - (min_x + max_x) * 0.5 * self.zoom
+        self.oy = self.viewport.centery - (min_y + max_y + 18.0) * 0.5 * self.zoom
 
     def _camera_factors(self) -> tuple[float, float]:
         """Return ground-depth and cube-height projection factors.
@@ -159,14 +180,21 @@ class Renderer:
         self.surf_off = (dx, dy)
 
     def to_screen(self, c: float, r: float, h: float = 0.0) -> tuple[float, float]:
-        u, v = c - r, c + r
-        cy, sy = math.cos(self.yaw), math.sin(self.yaw)
-        up = u * cy - v * sy
-        vp = u * sy + v * cy
-        sx = up * CELL
-        ground_y, height_y = self._camera_factors()
-        sy2 = vp * CELL * ground_y - h * CUBE_H * height_y
-        return self.ox + sx - self.surf_off[0], self.oy + sy2 - self.surf_off[1]
+        sx, sy = self._project_raw(c, r, h)
+        return (self.ox + sx * self.zoom - self.surf_off[0],
+                self.oy + sy * self.zoom - self.surf_off[1])
+
+    def playfield_bounds(self) -> pygame.Rect:
+        """Projected raised platform bounds, useful for tests and diagnostics."""
+        e = 0.85
+        points = [self.to_screen(c, r, h)
+                  for c, r in ((-e, TOP_ROW - e), (COLS + e, TOP_ROW - e),
+                               (COLS + e, ROWS + e), (-e, ROWS + e))
+                  for h in (0.0, 1.15)]
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        return pygame.Rect(math.floor(min(xs)), math.floor(min(ys)),
+                           math.ceil(max(xs) - min(xs)), math.ceil(max(ys) - min(ys) + 18))
 
     def sort_key(self, c: float, r: float) -> tuple[float, float]:
         """画家算法深度键：v' 大的靠前（后画），同深度按屏幕 x 排序"""
@@ -179,6 +207,7 @@ class Renderer:
     # ------------------------------------------------------------ 基础图形
     def _poly(self, surf: pygame.Surface, pts: list[tuple[float, float]],
               color: tuple[int, int, int], alpha: int = 255) -> None:
+        """Filled polygon with a one-pixel coverage fringe on diagonal edges."""
         if alpha < 255:
             left = math.floor(min(x for x, _ in pts)) - 1
             top = math.floor(min(y for _, y in pts)) - 1
@@ -186,10 +215,13 @@ class Renderer:
             bottom = math.ceil(max(y for _, y in pts)) + 2
             tmp = pygame.Surface((max(1, right - left), max(1, bottom - top)), pygame.SRCALPHA)
             local = [(int(x - left), int(y - top)) for x, y in pts]
-            pygame.draw.polygon(tmp, (*color, alpha), local)
+            pygame.gfxdraw.filled_polygon(tmp, local, (*color, alpha))
+            pygame.gfxdraw.aapolygon(tmp, local, (*color, alpha))
             surf.blit(tmp, (left, top))
         else:
-            pygame.draw.polygon(surf, color, [(int(x), int(y)) for x, y in pts])
+            local = [(int(round(x)), int(round(y))) for x, y in pts]
+            pygame.gfxdraw.filled_polygon(surf, local, color)
+            pygame.gfxdraw.aapolygon(surf, local, color)
 
     def draw_cube(self, surf: pygame.Surface, c: float, r: float,
                   color: tuple[int, int, int], alpha: int = 255,
@@ -243,6 +275,13 @@ class Renderer:
         cy_top = sum(pt[1] for pt in top_pts) / 4
         inset = [(x + (cx - x) * 0.10, y + (cy_top - y) * 0.10) for x, y in top_pts]
         self._poly(surf, inset, _shade(col_top, 1.06), max(0, alpha - 18))
+        # Narrow reflected-light strip gives the tile a coated surface without
+        # washing neighbouring pieces in a large bloom.
+        a0, a1 = top_pts[0], top_pts[1]
+        b0 = (a0[0] + (cx - a0[0]) * 0.20, a0[1] + (cy_top - a0[1]) * 0.20)
+        b1 = (a1[0] + (cx - a1[0]) * 0.20, a1[1] + (cy_top - a1[1]) * 0.20)
+        self._poly(surf, [a0, a1, b1, b0], (255, 255, 255),
+                   30 if glow else 17)
         draw_top_pattern(surf, top_pts, skin, color, x0, y0, x2, y2, top_y0, top_y2)
 
         ew = skin.get("edge_w", 1)
@@ -252,10 +291,16 @@ class Renderer:
                          (top_pts[2], top_pts[3]), (top_pts[3], top_pts[0]),
                          ((x1, y1), (x1, top_y1)), ((x2, y2), (x2, top_y2)),
                          ((x3, y3), (x3, top_y3))]:
-                pygame.draw.line(surf, col_edge, a, b, ew)
+                pygame.draw.aaline(surf, col_edge, a, b)
             # One-pixel specular edge separates adjacent cubes without a halo.
             highlight = (255, 255, 255) if glow else _shade(col_top, 1.18)
-            pygame.draw.line(surf, highlight, top_pts[0], top_pts[1], 1)
+            pygame.draw.aaline(surf, highlight, top_pts[0], top_pts[1])
+            # A second, translucent inset rim reads as reflected light rather
+            # than a flat white outline.
+            if glow and skin.get("glow", False):
+                inner = [(x + (cx - x) * 0.18, y + (cy_top - y) * 0.18)
+                         for x, y in top_pts]
+                pygame.draw.aalines(surf, _shade(col_top, 1.32), True, inner)
 
     def _glow(self, color: tuple[int, int, int]) -> pygame.Surface:
         key = str(color)
@@ -282,17 +327,31 @@ class Renderer:
             _, top_y3 = self.to_screen(c, r + 1, 1)
             col = (*color, GHOST_ALPHA)
             tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
-            pygame.draw.polygon(tmp, col, [(x0, top_y0), (x1, top_y1), (x2, top_y2), (x3, top_y3)])
-            pygame.draw.line(tmp, (*color, GHOST_ALPHA + 60), (x0, top_y0), (x1, top_y1), 1)
-            pygame.draw.line(tmp, (*color, GHOST_ALPHA + 60), (x1, top_y1), (x2, top_y2), 1)
-            pygame.draw.line(tmp, (*color, GHOST_ALPHA + 60), (x2, top_y2), (x3, top_y3), 1)
-            pygame.draw.line(tmp, (*color, GHOST_ALPHA + 60), (x0, top_y0), (x3, top_y3), 1)
-            pygame.draw.line(tmp, (*color, GHOST_ALPHA + 60), (x1, top_y1), (x1, y1), 1)
-            pygame.draw.line(tmp, (*color, GHOST_ALPHA + 60), (x2, y2), (x2, top_y2), 1)
-            pygame.draw.line(tmp, (*color, GHOST_ALPHA + 60), (x3, y3), (x3, top_y3), 1)
+            self._poly(tmp, [(x0, top_y0), (x1, top_y1), (x2, top_y2), (x3, top_y3)], color, GHOST_ALPHA)
+            edge = (*color, GHOST_ALPHA + 60)
+            for a, b in [((x0, top_y0), (x1, top_y1)), ((x1, top_y1), (x2, top_y2)),
+                         ((x2, top_y2), (x3, top_y3)), ((x0, top_y0), (x3, top_y3)),
+                         ((x1, top_y1), (x1, y1)), ((x2, top_y2), (x2, y2)),
+                         ((x3, top_y3), (x3, y3))]:
+                pygame.draw.aaline(tmp, edge, a, b)
             surf.blit(tmp, (0, 0))
 
     # ------------------------------------------------------------ 平台与地面
+    def draw_stage_light(self, surf: pygame.Surface, t: float, energy: float = 0.0) -> None:
+        """Low-frequency stage lighting tied to play, kept behind the matrix."""
+        cx, cy = self.to_screen(COLS * 0.5, (ROWS + TOP_ROW) * 0.5)
+        tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+        pulse = 0.86 + 0.14 * math.sin(t * 1.35)
+        for rx, ry, a in ((330, 240, 5), (260, 185, 8), (190, 132, 11)):
+            rect = pygame.Rect(0, 0, int(rx * 2 * pulse), int(ry * 2 * pulse))
+            rect.center = (round(cx), round(cy + 8))
+            pygame.draw.ellipse(tmp, (60, 102, 255, a + int(energy * 12)), rect)
+        sway = 34 * math.sin(t * 0.28)
+        beam = [(cx - 62 + sway, -30), (cx + 66 + sway, -30),
+                (cx + 245, surf.get_height() + 30), (cx - 250, surf.get_height() + 30)]
+        pygame.draw.polygon(tmp, (50, 92, 235, 5 + int(energy * 8)), beam)
+        surf.blit(tmp, (0, 0), special_flags=pygame.BLEND_ADD)
+
     def draw_floor(self, surf: pygame.Surface) -> None:
         """场地下方的环境阴影；网格只由平台绘制，避免双层重影。"""
         x0, y0 = self.to_screen(0, TOP_ROW)
@@ -323,7 +382,7 @@ class Renderer:
         x2, y2 = self.to_screen(COLS + e, ROWS + e)
         x3, y3 = self.to_screen(-e, ROWS + e)
         _, height_y = self._camera_factors()
-        side = max(3, int(16 * height_y))
+        side = max(3, int(16 * height_y * self.zoom))
 
         tmp = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
         # 侧面（南、东）
@@ -338,14 +397,14 @@ class Renderer:
         for c in range(COLS + 1):
             a = self.to_screen(c, TOP_ROW - e)
             b = self.to_screen(c, ROWS + e)
-            pygame.draw.line(tmp, (150, 170, 255, GRID_ALPHA + 18), (a[0], a[1]), (b[0], b[1]), 1)
+            pygame.draw.aaline(tmp, (150, 180, 255, GRID_ALPHA + 24), a, b)
         for r in range(TOP_ROW - 1, ROWS + 1):
             a = self.to_screen(-e, r)
             b = self.to_screen(COLS + e, r)
-            pygame.draw.line(tmp, (150, 170, 255, GRID_ALPHA + 18), (a[0], a[1]), (b[0], b[1]), 1)
+            pygame.draw.aaline(tmp, (150, 180, 255, GRID_ALPHA + 24), a, b)
         # 边框高光
-        pygame.draw.polygon(tmp, (170, 190, 255, 70),
-                            [(x0, y0), (x1, y1), (x2, y2), (x3, y3)], 2)
+        pygame.draw.aalines(tmp, (190, 212, 255, 105), True,
+                            [(x0, y0), (x1, y1), (x2, y2), (x3, y3)])
         surf.blit(tmp, (0, 0))
 
     # ------------------------------------------------------------ 粒子
@@ -373,7 +432,7 @@ class Renderer:
         for pad, alpha in ((2, 10), (7, 14), (12, 18)):
             pygame.draw.ellipse(tmp, (0, 0, 8, alpha),
                                 (pad, pad // 2, 112 - pad * 2, 40 - pad))
-        surf.blit(tmp, (cx - 56, cy + CUBE_H * 0.45 - 23))
+        surf.blit(tmp, (cx - 56, cy + CUBE_H * self.zoom * 0.45 - 23))
 
 
 def make_particles_for_clear(renderer: Renderer, cells: list[tuple[int, int]],

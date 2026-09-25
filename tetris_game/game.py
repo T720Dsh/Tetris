@@ -61,7 +61,7 @@ GRAVITY_NAMES = {
 _SETTINGS_DEFAULTS = {
     "das": DAS, "arr": ARR, "ghost": True, "sound": True, "volume": 0.7,
     "skin": "neon", "bg_theme": "default", "custom_bg": "", "fullscreen": False,
-    "gravity_speed": "very_slow", "view_sensitivity": 0.40,
+    "gravity_speed": "very_slow", "view_sensitivity": 0.25, "settings_version": 3,
 }
 
 
@@ -76,6 +76,7 @@ class Game:
         self.records_path = records_path
         self.fonts = ui.Fonts()
         self.renderer = Renderer()
+        self.renderer.set_viewport(SCENE_RECT)
         self.records = self._load_records()
         self.settings = self._load_settings()
         self.fullscreen_toggle = fullscreen_toggle
@@ -106,6 +107,7 @@ class Game:
         self.danger_warn_t = 0.0
         self.dust: list[dict] = []
         self._init_dust()
+        self.stage_ambient = self._build_stage_ambient()
 
         # 输入状态
         self.keys_held: set[int] = set()
@@ -115,6 +117,7 @@ class Game:
         self.mouse_pos = (0, 0)
         self.dragging = False
         self.last_mouse = (0, 0)
+        self.drag_filtered = (0.0, 0.0)
         self.buttons: list[ui.Button] = []
         self.win = False
         self.new_record = False
@@ -132,7 +135,7 @@ class Game:
             ("ghost", "幽灵投影", None, None, None),
             ("sound", "音效", None, None, None),
             ("volume", "音量", 0.0, 1.0, 0.05),
-            ("view_sensitivity", "视角灵敏度", 0.15, 1.00, 0.05),
+            ("view_sensitivity", "视角灵敏度", 0.10, 0.65, 0.05),
             ("skin", "方块材质", None, None, tuple(SKIN_ORDER)),
             ("bg_theme", "背景主题", None, None, tuple(BG_THEMES)),
             ("bg_upload", "上传背景图…", None, None, None),
@@ -169,7 +172,13 @@ class Game:
             with open(self._settings_path(), "r", encoding="utf-8") as f:
                 loaded = json.load(f)
                 bindings = loaded.pop("keybinds", {})
+                old_version = int(loaded.get("settings_version", 0))
                 st.update(loaded)
+                # v3 changes the mouse curve.  Migrate the formerly aggressive
+                # default even for players who already have a settings file.
+                if old_version < 3:
+                    st["view_sensitivity"] = 0.25
+                st["settings_version"] = 3
                 for action, key in bindings.items():
                     if action in DEFAULT_KEYBINDS and isinstance(key, int):
                         st["keybinds"][action] = key
@@ -757,9 +766,10 @@ class Game:
         self.renderer.set_view(self.renderer.yaw + dyaw, self.renderer.pitch + dpitch)
 
     def drag_start(self, pos: tuple[int, int]) -> None:
-        if self.state == "playing":
+        if self.state == "playing" and SCENE_RECT.collidepoint(pos):
             self.dragging = True
             self.last_mouse = pos
+            self.drag_filtered = (0.0, 0.0)
 
     def drag_move(self, pos: tuple[int, int]) -> None:
         if not self.dragging:
@@ -767,11 +777,21 @@ class Game:
         dx = pos[0] - self.last_mouse[0]
         dy = pos[1] - self.last_mouse[1]
         self.last_mouse = pos
-        sensitivity = self.settings.get("view_sensitivity", 0.40)
-        self.rotate_view(dx * 0.006 * sensitivity, dy * 0.005 * sensitivity)
+        # Suppress one-pixel hand jitter and soften sudden pointer jumps.  Upward
+        # dragging tilts toward top-down, matching a conventional orbit camera.
+        if abs(dx) < 2:
+            dx = 0
+        if abs(dy) < 2:
+            dy = 0
+        fx = self.drag_filtered[0] * 0.58 + _clamp(dx, -30, 30) * 0.42
+        fy = self.drag_filtered[1] * 0.58 + _clamp(dy, -30, 30) * 0.42
+        self.drag_filtered = (fx, fy)
+        sensitivity = self.settings.get("view_sensitivity", 0.25)
+        self.rotate_view(fx * 0.0036 * sensitivity, -fy * 0.0030 * sensitivity)
 
     def drag_end(self) -> None:
         self.dragging = False
+        self.drag_filtered = (0.0, 0.0)
 
     # ------------------------------------------------------------ 绘制
     def _init_dust(self) -> None:
@@ -781,6 +801,26 @@ class Game:
                 "vx": random.uniform(4, 16), "vy": random.uniform(2, 10),
                 "size": random.uniform(1, 3), "a": random.uniform(20, 70),
             })
+
+    def _build_stage_ambient(self) -> pygame.Surface:
+        """Cached soft light volume behind the board (no per-frame blur cost)."""
+        layer = pygame.Surface((WIN_W, WIN_H), pygame.SRCALPHA)
+        center = (672, 372)
+        for i in range(18, 0, -1):
+            k = i / 18.0
+            rect = pygame.Rect(0, 0, int(900 * k), int(590 * k))
+            rect.center = center
+            alpha = max(1, int(5 * (1.0 - k) + 1))
+            pygame.draw.ellipse(layer, (34, 70, 180, alpha), rect)
+        horizon = pygame.Surface((WIN_W, 180), pygame.SRCALPHA)
+        for y in range(90):
+            alpha = int(14 * (1.0 - y / 90.0) ** 2)
+            pygame.draw.line(horizon, (84, 48, 180, alpha),
+                             (0, 90 - y), (WIN_W, 90 - y))
+            pygame.draw.line(horizon, (28, 115, 190, alpha),
+                             (0, 90 + y), (WIN_W, 90 + y))
+        layer.blit(horizon, (0, 285))
+        return layer
 
     def draw_background(self) -> None:
         s = self.screen
@@ -794,6 +834,19 @@ class Game:
                 t = y / WIN_H
                 c = (int(14 + (8 - 14) * t), int(16 + (9 - 16) * t), int(34 + (22 - 34) * t))
                 pygame.draw.rect(s, c, (0, y, WIN_W, 4))
+            s.blit(self.stage_ambient, (0, 0))
+            # Slow, low-contrast light ribbons keep the stage alive without
+            # competing with the matrix. Their motion is tied to game time.
+            ribbons = pygame.Surface((WIN_W, WIN_H), pygame.SRCALPHA)
+            for index, (color, base, amplitude, speed) in enumerate((
+                    ((28, 168, 255, 17), 292, 25, 0.34),
+                    ((167, 72, 255, 13), 344, 36, -0.23))):
+                points = []
+                for x in range(-32, WIN_W + 64, 32):
+                    y = base + amplitude * math.sin(x * 0.008 + self.bg_time * speed + index)
+                    points.append((x, y))
+                pygame.draw.aalines(ribbons, color, False, points)
+            s.blit(ribbons, (0, 0))
         for d in self.dust:
             tmp = pygame.Surface((d["size"] * 2 + 2, d["size"] * 2 + 2), pygame.SRCALPHA)
             pygame.draw.circle(tmp, (180, 200, 255, int(d["a"])),
@@ -813,6 +866,7 @@ class Game:
         self.renderer.set_surface_offset(SCENE_RECT.x, SCENE_RECT.y)
         b = self.board
         if b:
+            self.renderer.draw_stage_light(scene, self.bg_time, b.danger_level())
             self.renderer.draw_floor(scene)
             self.renderer.draw_platform(scene)
             for (c, r), name in sorted(b.grid.items(),
@@ -909,54 +963,81 @@ class Game:
         if b is None:
             return
         cfg = MODE_CFG.get(self.mode, {})
-        ui.panel(s, pygame.Rect(16, 16, 254, 642))
-        ui.text(s, f, MODE_NAME[self.mode], 24, (30, 32), color=ACCENT)
-        ui.text(s, f, ui.format_time(self.elapsed), 44, (30, 72), color=TEXT_MAIN, bold=True)
-        ui.text(s, f, "已生存" if self.mode == "endless" else "计时", 15, (30, 124),
-                color=TEXT_DIM, shadow=False)
+        left = pygame.Rect(16, 20, 252, 402)
+        ui.panel(s, left, fill=(10, 15, 34, 180), border=(98, 137, 218, 62), radius=16)
+        pygame.draw.line(s, ACCENT, (32, 21), (104, 21), 2)
+        ui.text(s, f, "LIVE SESSION", 12, (32, 38), color=ACCENT, bold=True)
+        ui.text(s, f, MODE_NAME[self.mode], 22, (32, 62), color=TEXT_MAIN, bold=True)
+        ui.text(s, f, ui.format_time(self.elapsed), 40, (32, 98), color=TEXT_MAIN, bold=True)
+        ui.text(s, f, "SURVIVAL" if self.mode == "endless" else "ELAPSED", 11,
+                (34, 142), color=TEXT_DIM, shadow=False)
         if cfg.get("goal") == "time":
             rem = max(0.0, cfg["target"] - self.elapsed)
-            ui.text(s, f, ui.format_time(rem), 32, (206, 86), color=ACCENT, anchor="midright")
-            ui.text(s, f, "剩余", 15, (206, 124), color=GOOD, anchor="midright", shadow=False)
+            ui.text(s, f, ui.format_time(rem), 23, (244, 116), color=ACCENT,
+                    anchor="midright", bold=True)
+            ui.text(s, f, "剩余", 12, (244, 143), color=GOOD,
+                    anchor="midright", shadow=False)
+
+        goal = cfg.get("goal")
+        if goal == "lines":
+            ratio = b.lines / max(1, cfg["target"])
+            progress_text = f"目标进度  {b.lines} / {cfg['target']} 行"
+        elif goal == "score":
+            ratio = b.score / max(1, cfg["target"])
+            progress_text = f"目标进度  {b.score} / {cfg['target']} 分"
+        elif goal == "time":
+            ratio = self.elapsed / max(1, cfg["target"])
+            progress_text = f"限时进度  {min(self.elapsed, cfg['target']):.1f} / {cfg['target']} 秒"
+        else:
+            ratio = min(1.0, b.danger_level())
+            progress_text = "堆叠压力"
+        ui.text(s, f, progress_text, 13, (32, 171), color=TEXT_DIM, shadow=False)
+        bar = pygame.Rect(32, 194, 212, 4)
+        pygame.draw.rect(s, (37, 48, 80), bar, border_radius=2)
+        fill = bar.copy()
+        fill.width = max(3, int(bar.width * _clamp(ratio, 0.0, 1.0)))
+        pygame.draw.rect(s, DANGER if ratio > 0.78 else ACCENT, fill, border_radius=2)
 
         rows = [
             ("分数", str(b.score)),
-            ("行数", f"{b.lines} / {cfg['target']}" if cfg.get("goal") == "lines" else str(b.lines)),
+            ("行数", str(b.lines)),
             ("等级", str(b.level)),
             ("已放块", str(b.pieces_placed)),
             ("PPS", f"{self.pps:.2f}"),
             ("连击", f"×{b.combo}" if b.combo >= 2 else "—"),
         ]
-        y = 152
-        for k, v in rows:
-            ui.text(s, f, k, 16, (30, y), color=TEXT_DIM, shadow=False)
-            ui.text(s, f, v, 20, (244, y + 8), color=TEXT_MAIN, anchor="midright")
-            y += 38
-        ui.text(s, f, "最佳纪录", 16, (30, y + 4), color=TEXT_DIM, shadow=False)
-        y += 34
-        for m in MODES:
-            cfgm = MODE_CFG[m]
-            best = self.records[m]
-            if cfgm["record"] == "score":
-                v = f"{best} 分" if best else "—"
-            else:
-                v = ui.format_time(best) if best else "—"
-            ui.text(s, f, MODE_NAME[m], 14, (30, y), color=TEXT_DIM, shadow=False)
-            ui.text(s, f, v, 14, (244, y + 8), color=TEXT_MAIN,
-                    anchor="midright", shadow=False)
-            y += 24
+        for i, (label, value) in enumerate(rows):
+            col, row = i % 2, i // 2
+            x = 32 + col * 108
+            y = 224 + row * 54
+            ui.text(s, f, label, 12, (x, y), color=TEXT_DIM, shadow=False)
+            ui.text(s, f, value, 22, (x, y + 18), color=TEXT_MAIN, bold=True)
+
+        best = self.records[self.mode]
+        if cfg.get("record") == "score":
+            best_value = f"{best} 分" if best else "—"
+        else:
+            best_value = ui.format_time(best) if best else "—"
+        record_card = pygame.Rect(16, 440, 252, 116)
+        ui.panel(s, record_card, fill=(9, 14, 31, 165),
+                 border=(104, 122, 196, 46), radius=14)
+        ui.text(s, f, "PERSONAL BEST", 11, (32, 459), color=ACCENT2, bold=True)
+        ui.text(s, f, best_value, 27, (32, 482), color=TEXT_MAIN, bold=True)
+        ui.text(s, f, "当前模式历史最佳", 12, (32, 523), color=TEXT_DIM, shadow=False)
 
         # 右侧：暂存 + 下一块
-        ui.panel(s, pygame.Rect(1044, 16, 220, 642))
-        ui.text(s, f, "方块队列", 19, (1154, 40), color=TEXT_MAIN,
+        ui.panel(s, pygame.Rect(1044, 20, 220, 590), fill=(10, 15, 34, 180),
+                 border=(98, 137, 218, 62), radius=16)
+        pygame.draw.line(s, ACCENT2, (1176, 21), (1248, 21), 2)
+        ui.text(s, f, "PIECE FLOW", 12, (1154, 42), color=ACCENT2,
                 anchor="center", bold=True)
-        ui.draw_preview(s, f, "暂存  HOLD", b.hold, (1154, 118), cell=13,
-                        skin=self.renderer.current_skin, box_size=(184, 112))
-        ui.text(s, f, "接下来  NEXT", 14, (1154, 196), color=TEXT_DIM,
+        ui.draw_preview(s, f, "暂存  HOLD", b.hold, (1154, 116), cell=13,
+                        skin=self.renderer.current_skin, box_size=(184, 104))
+        ui.text(s, f, "接下来  NEXT", 12, (1154, 185), color=TEXT_DIM,
                 anchor="center", shadow=False)
         for i, name in enumerate(b.next_queue[:5]):
-            ui.draw_preview(s, f, "", name, (1154, 240 + i * 75), cell=11,
-                            skin=self.renderer.current_skin, box_size=(184, 62))
+            ui.draw_preview(s, f, "", name, (1154, 224 + i * 70), cell=11,
+                            skin=self.renderer.current_skin, box_size=(184, 56))
 
         def kn(action):
             return pygame.key.name(self._key(action)).upper()
@@ -964,7 +1045,7 @@ class Game:
                 f"{kn('rotate_cw')} 旋转   {kn('hard_drop')} 硬降   {kn('hold')} 暂存",
                 14, (WIN_W // 2, WIN_H - 46), color=TEXT_DIM, anchor="center", shadow=False)
         ui.text(s, f, f"{kn('pause')} 暂停   {kn('restart')} 重开   {kn('view_front')} 正面视角   "
-                "F11 全屏   鼠标拖拽旋转",
+                "F11 全屏   场地内按住左键拖拽视角",
                 14, (WIN_W // 2, WIN_H - 25), color=TEXT_DIM, anchor="center", shadow=False)
 
     def _draw_countdown(self) -> None:

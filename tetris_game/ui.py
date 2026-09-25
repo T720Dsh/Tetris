@@ -1,8 +1,10 @@
 """UI：字体、面板、按钮、HUD、菜单绘制"""
 from __future__ import annotations
+from collections import OrderedDict
 import os
 
 import pygame
+import pygame.gfxdraw
 
 from .constants import (WIN_W, WIN_H, TEXT_MAIN, TEXT_DIM, ACCENT, ACCENT2,
                         PANEL_FILL, PANEL_BORDER, DANGER, GOOD, MODE_NAME,
@@ -29,6 +31,7 @@ class Fonts:
         self.regular = next((p for p in FONT_REGULAR_CANDIDATES if os.path.exists(p)), None)
         self.bold = next((p for p in FONT_BOLD_CANDIDATES if os.path.exists(p)), self.regular)
         self._cache: dict[tuple[str, int], pygame.font.Font] = {}
+        self._render_cache: OrderedDict[tuple, pygame.Surface] = OrderedDict()
 
     def get(self, size: int, bold: bool = False) -> pygame.font.Font:
         family = self.bold if bold else self.regular
@@ -42,33 +45,63 @@ class Fonts:
             self._cache[key] = f
         return self._cache[key]
 
+    def render(self, value: str, size: int, color, bold: bool = False) -> pygame.Surface:
+        """Rasterize type at 2x and resolve it back to logical resolution.
+
+        This follows the same useful idea as DPI-aware game UIs: font detail is
+        generated before layout scaling instead of trying to sharpen a small
+        glyph afterwards.  It is especially noticeable on Chinese diagonals and
+        curved numerals.
+        """
+        key = (value, size, tuple(color), bold)
+        cached = self._render_cache.get(key)
+        if cached is not None:
+            self._render_cache.move_to_end(key)
+            return cached
+        sample = 2
+        hi = self.get(size * sample, bold).render(value, True, color)
+        target = (max(1, round(hi.get_width() / sample)),
+                  max(1, round(hi.get_height() / sample)))
+        result = pygame.transform.smoothscale(hi, target)
+        self._render_cache[key] = result
+        if len(self._render_cache) > 384:
+            self._render_cache.popitem(last=False)
+        return result
+
 
 # ---------------------------------------------------------------- 基础绘制
 def panel(surf: pygame.Surface, rect: pygame.Rect, fill=PANEL_FILL,
           border=PANEL_BORDER, radius: int = 14) -> None:
-    # Local surface keeps the many HUD/preview cards cheap enough for 60 fps.
-    tmp = pygame.Surface((rect.width, rect.height + 9), pygame.SRCALPHA)
+    # Layered glass with a restrained top light.  Keeping contrast at the edges
+    # instead of outlining every element makes the HUD feel lighter and clearer.
+    tmp = pygame.Surface((rect.width + 8, rect.height + 12), pygame.SRCALPHA)
     local = pygame.Rect(0, 0, rect.width, rect.height)
-    shadow = local.move(0, 7)
-    pygame.draw.rect(tmp, (0, 0, 8, 85), shadow, border_radius=radius + 2)
+    pygame.draw.rect(tmp, (0, 0, 8, 30), local.move(4, 8), border_radius=radius + 4)
+    pygame.draw.rect(tmp, (0, 0, 8, 68), local.move(1, 5), border_radius=radius + 2)
     pygame.draw.rect(tmp, fill, local, border_radius=radius)
     pygame.draw.rect(tmp, border, local, width=1, border_radius=radius)
     inner = local.inflate(-4, -4)
-    pygame.draw.rect(tmp, (255, 255, 255, 14), inner, width=1, border_radius=max(2, radius - 2))
+    pygame.draw.rect(tmp, (255, 255, 255, 10), inner, width=1,
+                     border_radius=max(2, radius - 2))
+    pygame.draw.line(tmp, (205, 226, 255, 34), (radius, 1),
+                     (rect.width - radius, 1), 1)
     surf.blit(tmp, rect.topleft)
 
 
 def text(surf: pygame.Surface, fonts: Fonts, s: str, size: int, pos: tuple[int, int],
          color=TEXT_MAIN, anchor: str = "topleft", bold: bool = False,
          shadow: bool = False, alpha: int = 255) -> pygame.Rect:
-    f = fonts.get(size, bold)
-    img = f.render(s, True, color)
+    img = fonts.render(s, size, color, bold)
     if alpha < 255:
+        img = img.copy()
         img.set_alpha(alpha)
     r = img.get_rect()
     setattr(r, anchor, pos)
     if shadow:
-        sh = f.render(s, True, (0, 0, 0))
+        sh = fonts.render(s, size, (0, 0, 0), bold)
+        if alpha < 255:
+            sh = sh.copy()
+            sh.set_alpha(alpha)
         surf.blit(sh, (r.x + 2, r.y + 2))
     surf.blit(img, r)
     return r
@@ -166,21 +199,22 @@ def draw_preview(surf: pygame.Surface, fonts: Fonts, title: str,
         x3, y3 = ox + project(c, r + 1)[0], oy + project(c, r + 1)[1]
         t = cell * 0.9
         col_top, col_east, col_south, col_edge = skin_face_colors(color, skin)
-        pygame.draw.polygon(surf, col_east,
-                            [(x1, y1), (x2, y2), (x2, y2 - t), (x1, y1 - t)])
-        pygame.draw.polygon(surf, col_south,
-                            [(x2, y2), (x3, y3), (x3, y3 - t), (x2, y2 - t)])
-        pygame.draw.polygon(surf, col_top,
-                            [(x0, y0 - t), (x1, y1 - t), (x2, y2 - t), (x3, y3 - t)])
+        def face(points, face_color):
+            ip = [(round(x), round(y)) for x, y in points]
+            pygame.gfxdraw.filled_polygon(surf, ip, face_color)
+            pygame.gfxdraw.aapolygon(surf, ip, face_color)
+        face([(x1, y1), (x2, y2), (x2, y2 - t), (x1, y1 - t)], col_east)
+        face([(x2, y2), (x3, y3), (x3, y3 - t), (x2, y2 - t)], col_south)
+        face([(x0, y0 - t), (x1, y1 - t), (x2, y2 - t), (x3, y3 - t)], col_top)
         if skin.get("edge_w", 1) >= 1:
-            ew = skin["edge_w"]
-            pygame.draw.line(surf, col_edge, (x0, y0 - t), (x1, y1 - t), ew)
-            pygame.draw.line(surf, col_edge, (x1, y1 - t), (x2, y2 - t), ew)
-            pygame.draw.line(surf, col_edge, (x2, y2 - t), (x3, y3 - t), ew)
-            pygame.draw.line(surf, col_edge, (x3, y3 - t), (x0, y0 - t), ew)
-            pygame.draw.line(surf, col_edge, (x1, y1), (x1, y1 - t), ew)
-            pygame.draw.line(surf, col_edge, (x2, y2), (x2, y2 - t), ew)
-            pygame.draw.line(surf, col_edge, (x3, y3), (x3, y3 - t), ew)
+            for a, b in [((x0, y0 - t), (x1, y1 - t)),
+                         ((x1, y1 - t), (x2, y2 - t)),
+                         ((x2, y2 - t), (x3, y3 - t)),
+                         ((x3, y3 - t), (x0, y0 - t)),
+                         ((x1, y1), (x1, y1 - t)),
+                         ((x2, y2), (x2, y2 - t)),
+                         ((x3, y3), (x3, y3 - t))]:
+                pygame.draw.aaline(surf, col_edge, a, b)
 
 
 def PIECE_C(name: str):

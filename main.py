@@ -17,8 +17,16 @@ class DisplayManager:
         self.headless = headless
         self.fullscreen = False
         self.windowed_size = (width, height)
-        flags = 0 if headless else pygame.RESIZABLE
-        self.window = pygame.display.set_mode(self.logical_size, flags)
+        self.hardware_scaled = False
+        if headless:
+            self.window = pygame.display.set_mode(self.logical_size)
+        else:
+            try:
+                self.window = pygame.display.set_mode(
+                    self.logical_size, pygame.RESIZABLE | pygame.SCALED, vsync=1)
+                self.hardware_scaled = True
+            except pygame.error:
+                self.window = pygame.display.set_mode(self.logical_size, pygame.RESIZABLE)
         self.canvas = self.window if headless else pygame.Surface(self.logical_size)
 
     def toggle_fullscreen(self, enabled: bool | None = None) -> bool:
@@ -27,8 +35,31 @@ class DisplayManager:
         target = (not self.fullscreen) if enabled is None else bool(enabled)
         if target == self.fullscreen:
             return self.fullscreen
+        if self.hardware_scaled:
+            # SDL's scaled renderer preserves the logical 1280x800 surface,
+            # performs the final resize on the GPU and maps mouse input back to
+            # logical coordinates.  pygame documents this as its reliable
+            # Windows fullscreen toggle path.
+            try:
+                result = self.pygame.display.toggle_fullscreen()
+                if result == 0:
+                    self.window = self.pygame.display.get_surface()
+                    self.fullscreen = target
+                    return self.fullscreen
+            except pygame.error:
+                pass
+            try:
+                flags = self.pygame.SCALED | (self.pygame.FULLSCREEN
+                                               if target else self.pygame.RESIZABLE)
+                self.window = self.pygame.display.set_mode(self.logical_size, flags, vsync=1)
+                self.fullscreen = target
+                return self.fullscreen
+            except pygame.error:
+                self.hardware_scaled = False
         if target:
-            self.windowed_size = self.window.get_size()
+            self.windowed_size = (self.pygame.display.get_window_size()
+                                  if hasattr(self.pygame.display, "get_window_size")
+                                  else self.window.get_size())
             self.window = self.pygame.display.set_mode((0, 0), self.pygame.FULLSCREEN)
         else:
             self.window = self.pygame.display.set_mode(self.windowed_size, self.pygame.RESIZABLE)
@@ -38,6 +69,8 @@ class DisplayManager:
     def to_logical(self, pos: tuple[int, int]) -> tuple[int, int]:
         if self.headless:
             return pos
+        if self.hardware_scaled:
+            return pos  # SCALED remaps mouse events for us.
         ww, wh = self.window.get_size()
         lw, lh = self.logical_size
         scale = min(ww / lw, wh / lh)
@@ -49,26 +82,44 @@ class DisplayManager:
         if self.headless:
             self.pygame.display.flip()
             return
+        if self.hardware_scaled:
+            self.window.blit(self.canvas, (0, 0))
+            self.pygame.display.flip()
+            return
         ww, wh = self.window.get_size()
         lw, lh = self.logical_size
         scale = min(ww / lw, wh / lh)
         size = (max(1, round(lw * scale)), max(1, round(lh * scale)))
-        # Nearest-neighbour presentation keeps text and one-pixel UI borders crisp.
-        # smoothscale made the entire interface visibly soft on 1080p/1440p displays.
-        frame = (self.canvas if size == self.logical_size
-                 else self.pygame.transform.scale(self.canvas, size))
+        if size == self.logical_size:
+            frame = self.canvas
+        elif scale > 1.0:
+            # A pure nearest-neighbour resize made diagonal playfield edges and
+            # Chinese glyphs visibly stair-step at common non-integer fullscreen
+            # scales (for example 1.35x on a 1080p 16:9 display).  Blend a
+            # filtered enlargement with a light crisp pass: the former supplies
+            # sub-pixel coverage, the latter prevents the whole UI looking soft.
+            frame = self.pygame.transform.smoothscale(self.canvas, size)
+            crisp = self.pygame.transform.scale(self.canvas, size)
+            crisp.set_alpha(46)
+            frame.blit(crisp, (0, 0))
+        else:
+            frame = self.pygame.transform.smoothscale(self.canvas, size)
         self.window.fill((3, 5, 14))
         self.window.blit(frame, ((ww - size[0]) // 2, (wh - size[1]) // 2))
         self.pygame.display.flip()
 
 
 def main() -> int:
-    import pygame
-
     headless = "--shot" in sys.argv
     if headless:
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
         os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    else:
+        # Pygame's SDL renderer performs high-quality filtered scaling in GPU
+        # space instead of stretching the finished frame in software.
+        os.environ.setdefault("PYGAME_FORCE_SCALE", "photo")
+
+    import pygame
 
     pygame.init()
     try:
@@ -133,13 +184,14 @@ def main() -> int:
                 game.handle_hover(pos)
                 game.drag_move(pos)
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button in (1, 3):
+                if event.button == 1:
                     pos = display.to_logical(event.pos)
                     game.drag_start(pos)
                     game.handle_click(pos)
-            elif event.type == pygame.MOUSEBUTTONUP:
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 game.drag_end()
             elif event.type == pygame.WINDOWFOCUSLOST:
+                game.drag_end()
                 if game.state == "playing":
                     game.state = "paused"
 
