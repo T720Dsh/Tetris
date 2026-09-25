@@ -1,29 +1,23 @@
 @echo off
-rem ============================================
-rem  TETRIS 3D RUSH 一键打包 EXE
-rem  依赖：D:\tetris3d-venv 中已安装 pyinstaller
-rem  产物：dist\Tetris3DRush.exe（单文件，无需 Python 环境）
-rem  全程在 D 盘工作，不占用 C 盘空间
-rem ============================================
+REM Tetris 3D Rush - Godot 导出脚本（模板与用户数据均在 D 盘）
 setlocal
-set VENV=D:\tetris3d-venv
-set TMP=D:\tetris3d\pyi_tmp
-set TEMP=D:\tetris3d\pyi_tmp
-if not exist "%TMP%" mkdir "%TMP%"
+set GODOT="D:\Godot\Godot_v4.3-stable_win64.exe"
+set PROJ=D:\GodotTetris3D
+set APPDATA=D:\GodotAppData
+set OUT=%PROJ%\build\Tetris3DRush.exe
 
-if not exist "%VENV%\Scripts\pyinstaller.exe" (
-    echo [setup] 安装 pyinstaller ...
-    "%VENV%\Scripts\python.exe" -m pip install --no-cache-dir pyinstaller
+if not exist "%APPDATA%\Godot\export_templates\4.3.stable\windows_release.exe" (
+    echo [ERROR] 模板未就绪：%APPDATA%\Godot\export_templates\4.3.stable\
+    exit /b 1
 )
 
-cd /d "%~dp0"
-"%VENV%\Scripts\pyinstaller.exe" --noconfirm --clean --onefile --windowed ^
-    --name Tetris3DRush ^
-    --distpath "%~dp0dist" ^
-    --workpath "%~dp0build" ^
-    --specpath "%~dp0build" ^
-    main.py
-
-echo.
-echo 打包完成：dist\Tetris3DRush.exe
-pause
+mkdir "%PROJ%\build" 2>nul
+echo [1/2] 导出 Windows x86_64 可执行文件...
+%GODOT% --headless --path "%PROJ%" --export-release "Windows Desktop" "%OUT%"
+if errorlevel 1 (
+    echo [ERROR] 导出失败
+    exit /b 1
+)
+echo [2/2] 打包 zip...
+powershell -NoProfile -Command "Compress-Archive -Path '%OUT%' -DestinationPath '%PROJ%\build\Tetris3DRush-win64.zip' -Force"
+echo 完成：%OUT%
