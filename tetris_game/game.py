@@ -60,8 +60,8 @@ GRAVITY_NAMES = {
 
 _SETTINGS_DEFAULTS = {
     "das": DAS, "arr": ARR, "ghost": True, "sound": True, "volume": 0.7,
-    "skin": "neon", "bg_theme": "default", "custom_bg": "", "fullscreen": False,
-    "gravity_speed": "very_slow", "view_sensitivity": 0.25, "settings_version": 3,
+    "skin": "luminous", "bg_theme": "default", "custom_bg": "", "fullscreen": False,
+    "gravity_speed": "very_slow", "view_sensitivity": 0.25, "settings_version": 4,
 }
 
 
@@ -127,6 +127,7 @@ class Game:
         self.settings_return_state = "menu"
         self.keybind_idx = 0
         self.binding_capture: str | None = None
+        self.binding_wait_release: int | None = None
         self.binding_notice = ""
         self.settings_items = [
             ("das", "移动延迟 DAS", 0.040, 0.300, 0.005),
@@ -178,7 +179,9 @@ class Game:
                 # default even for players who already have a settings file.
                 if old_version < 3:
                     st["view_sensitivity"] = 0.25
-                st["settings_version"] = 3
+                if old_version < 4 and st.get("skin") == "neon":
+                    st["skin"] = "luminous"
+                st["settings_version"] = 4
                 for action, key in bindings.items():
                     if action in DEFAULT_KEYBINDS and isinstance(key, int):
                         st["keybinds"][action] = key
@@ -199,12 +202,13 @@ class Game:
     def _held(self, action: str) -> bool:
         return self._key(action) in self.keys_held
 
-    def save_settings(self) -> None:
+    def save_settings(self) -> bool:
         try:
             with open(self._settings_path(), "w", encoding="utf-8") as f:
                 json.dump(self.settings, f, ensure_ascii=False, indent=2)
+            return True
         except Exception:
-            pass
+            return False
 
     # ------------------------------------------------------------ 开局
     def new_game(self, mode: str) -> None:
@@ -298,6 +302,10 @@ class Game:
 
     def on_key_up(self, key: int) -> None:
         self.keys_held.discard(key)
+        if (self.state == "keybinds" and self.binding_capture is not None
+                and self.binding_wait_release == key):
+            self.binding_wait_release = None
+            self.binding_notice = "现在按下要绑定的新键"
         if key in (self._key("move_left"), self._key("move_right")):
             self.das_acc = 0.0
             self.arr_acc = 0.0
@@ -319,6 +327,7 @@ class Game:
             self.state = "keybinds"
             self.keybind_idx = 0
             self.binding_capture = None
+            self.binding_wait_release = None
             self.binding_notice = "选择一项后按 Enter 或直接点击，再按新键"
             self.keys_held.clear()
             self.buttons = []
@@ -376,8 +385,13 @@ class Game:
         if self.binding_capture is not None:
             if key == pygame.K_ESCAPE:
                 self.binding_capture = None
+                self.binding_wait_release = None
                 self.binding_notice = "已取消修改"
                 self.sound("ui_move")
+                return
+            if self.binding_wait_release is not None:
+                self.binding_notice = (f"请先松开 {pygame.key.name(self.binding_wait_release).upper()}，"
+                                       "再按新键")
                 return
             if key == pygame.K_UNKNOWN:
                 self.binding_notice = "未识别这个按键，请换一个键"
@@ -394,7 +408,11 @@ class Game:
             else:
                 self.binding_notice = f"已设置 {KEYBIND_LABELS[action]}"
             self.binding_capture = None
-            self.save_settings()
+            self.binding_wait_release = None
+            if self.save_settings():
+                self.binding_notice += f" → {pygame.key.name(key).upper()}（已保存）"
+            else:
+                self.binding_notice += "（本局已生效，但保存失败）"
             self.sound("ui_ok")
             return
         if key == pygame.K_ESCAPE:
@@ -408,7 +426,8 @@ class Game:
             self.sound("ui_move")
         elif key in (pygame.K_RETURN, pygame.K_SPACE):
             self.binding_capture = actions[self.keybind_idx]
-            self.binding_notice = "等待按键输入…"
+            self.binding_wait_release = key
+            self.binding_notice = f"请先松开 {pygame.key.name(key).upper()}"
             self.sound("ui_ok")
         elif key in (pygame.K_BACKSPACE, pygame.K_DELETE):
             action = actions[self.keybind_idx]
@@ -741,6 +760,7 @@ class Game:
                         self.state = "keybinds"
                         self.keybind_idx = 0
                         self.binding_capture = None
+                        self.binding_wait_release = None
                         self.binding_notice = "点击动作或按 Enter，然后按下新键"
                         self.keys_held.clear()
                     return
@@ -752,6 +772,7 @@ class Game:
                 if rect.collidepoint(pos):
                     self.keybind_idx = i
                     self.binding_capture = actions[i]
+                    self.binding_wait_release = None
                     self.binding_notice = "等待按键输入…"
                     self.sound("ui_ok")
                     return
@@ -946,8 +967,8 @@ class Game:
         s.blit(title_glow, (0, 0))
         ui.text(s, f, "TETRIS 3D RUSH", 62, (640, 120), color=ACCENT, anchor="center", bold=True)
         ui.text(s, f, "伪 3D · 竞速俄罗斯方块", 22, (640, 172), color=TEXT_DIM, anchor="center")
-        ui.panel(s, pygame.Rect(196, 198, 888, 338), fill=(10, 14, 34, 115),
-                 border=(90, 120, 220, 45), radius=20)
+        ui.text(s, f, "PLAY  /  SELECT MODE", 14, (220, 196), color=ACCENT2, bold=True)
+        pygame.draw.aaline(s, (81, 94, 150), (220, 214), (1060, 214))
         self.buttons = self._make_menu_buttons()
         for b in self.buttons:
             b.draw(s, f)
@@ -963,19 +984,17 @@ class Game:
         if b is None:
             return
         cfg = MODE_CFG.get(self.mode, {})
-        left = pygame.Rect(16, 20, 252, 402)
-        ui.panel(s, left, fill=(10, 15, 34, 180), border=(98, 137, 218, 62), radius=16)
-        pygame.draw.line(s, ACCENT, (32, 21), (104, 21), 2)
-        ui.text(s, f, "LIVE SESSION", 12, (32, 38), color=ACCENT, bold=True)
-        ui.text(s, f, MODE_NAME[self.mode], 22, (32, 62), color=TEXT_MAIN, bold=True)
-        ui.text(s, f, ui.format_time(self.elapsed), 40, (32, 98), color=TEXT_MAIN, bold=True)
-        ui.text(s, f, "SURVIVAL" if self.mode == "endless" else "ELAPSED", 11,
-                (34, 142), color=TEXT_DIM, shadow=False)
+        ui.hud_wash(s, pygame.Rect(0, 18, 276, 548), ACCENT, "left")
+        ui.text(s, f, "SESSION  /  01", 14, (30, 34), color=ACCENT, bold=True)
+        ui.text(s, f, MODE_NAME[self.mode], 25, (30, 64), color=TEXT_MAIN, bold=True)
+        ui.text(s, f, ui.format_time(self.elapsed), 46, (30, 105), color=TEXT_MAIN, bold=True)
+        ui.text(s, f, "生存时间" if self.mode == "endless" else "本局用时", 14,
+                (32, 156), color=TEXT_DIM, shadow=False)
         if cfg.get("goal") == "time":
             rem = max(0.0, cfg["target"] - self.elapsed)
-            ui.text(s, f, ui.format_time(rem), 23, (244, 116), color=ACCENT,
+            ui.text(s, f, ui.format_time(rem), 24, (246, 133), color=ACCENT,
                     anchor="midright", bold=True)
-            ui.text(s, f, "剩余", 12, (244, 143), color=GOOD,
+            ui.text(s, f, "剩余", 14, (246, 161), color=GOOD,
                     anchor="midright", shadow=False)
 
         goal = cfg.get("goal")
@@ -991,62 +1010,53 @@ class Game:
         else:
             ratio = min(1.0, b.danger_level())
             progress_text = "堆叠压力"
-        ui.text(s, f, progress_text, 13, (32, 171), color=TEXT_DIM, shadow=False)
-        bar = pygame.Rect(32, 194, 212, 4)
+        ui.text(s, f, progress_text, 15, (30, 190), color=TEXT_DIM, shadow=False)
+        bar = pygame.Rect(30, 219, 216, 3)
         pygame.draw.rect(s, (37, 48, 80), bar, border_radius=2)
         fill = bar.copy()
         fill.width = max(3, int(bar.width * _clamp(ratio, 0.0, 1.0)))
         pygame.draw.rect(s, DANGER if ratio > 0.78 else ACCENT, fill, border_radius=2)
 
-        rows = [
-            ("分数", str(b.score)),
-            ("行数", str(b.lines)),
-            ("等级", str(b.level)),
-            ("已放块", str(b.pieces_placed)),
-            ("PPS", f"{self.pps:.2f}"),
-            ("连击", f"×{b.combo}" if b.combo >= 2 else "—"),
-        ]
+        rows = [("分数 SCORE", str(b.score)), ("行数 LINES", str(b.lines)),
+                ("等级 LEVEL", str(b.level)), ("速度 PPS", f"{self.pps:.2f}"),
+                ("已放方块", str(b.pieces_placed)),
+                ("连击 COMBO", f"×{b.combo}" if b.combo >= 2 else "—")]
         for i, (label, value) in enumerate(rows):
             col, row = i % 2, i // 2
-            x = 32 + col * 108
-            y = 224 + row * 54
-            ui.text(s, f, label, 12, (x, y), color=TEXT_DIM, shadow=False)
-            ui.text(s, f, value, 22, (x, y + 18), color=TEXT_MAIN, bold=True)
+            x = 30 + col * 116
+            y = 252 + row * 65
+            ui.text(s, f, label, 13, (x, y), color=TEXT_DIM, shadow=False)
+            ui.text(s, f, value, 25, (x, y + 21), color=TEXT_MAIN, bold=True)
 
         best = self.records[self.mode]
         if cfg.get("record") == "score":
             best_value = f"{best} 分" if best else "—"
         else:
             best_value = ui.format_time(best) if best else "—"
-        record_card = pygame.Rect(16, 440, 252, 116)
-        ui.panel(s, record_card, fill=(9, 14, 31, 165),
-                 border=(104, 122, 196, 46), radius=14)
-        ui.text(s, f, "PERSONAL BEST", 11, (32, 459), color=ACCENT2, bold=True)
-        ui.text(s, f, best_value, 27, (32, 482), color=TEXT_MAIN, bold=True)
-        ui.text(s, f, "当前模式历史最佳", 12, (32, 523), color=TEXT_DIM, shadow=False)
+        pygame.draw.aaline(s, (125, 105, 210), (30, 461), (246, 461))
+        ui.text(s, f, "PERSONAL BEST", 13, (30, 478), color=ACCENT2, bold=True)
+        ui.text(s, f, best_value, 29, (30, 503), color=TEXT_MAIN, bold=True)
+        ui.text(s, f, "当前模式历史最佳", 14, (30, 539), color=TEXT_DIM, shadow=False)
 
         # 右侧：暂存 + 下一块
-        ui.panel(s, pygame.Rect(1044, 20, 220, 590), fill=(10, 15, 34, 180),
-                 border=(98, 137, 218, 62), radius=16)
-        pygame.draw.line(s, ACCENT2, (1176, 21), (1248, 21), 2)
-        ui.text(s, f, "PIECE FLOW", 12, (1154, 42), color=ACCENT2,
-                anchor="center", bold=True)
-        ui.draw_preview(s, f, "暂存  HOLD", b.hold, (1154, 116), cell=13,
-                        skin=self.renderer.current_skin, box_size=(184, 104))
-        ui.text(s, f, "接下来  NEXT", 12, (1154, 185), color=TEXT_DIM,
-                anchor="center", shadow=False)
+        ui.hud_wash(s, pygame.Rect(1028, 18, 252, 552), ACCENT2, "right")
+        ui.text(s, f, "PIECE FLOW", 14, (1248, 35), color=ACCENT2,
+                anchor="topright", bold=True)
+        ui.draw_preview(s, f, "暂存  /  HOLD", b.hold, (1155, 112), cell=14,
+                        skin=self.renderer.current_skin, box_size=(190, 112), framed=False)
+        pygame.draw.aaline(s, (112, 94, 190), (1060, 174), (1250, 174))
+        ui.text(s, f, "接下来  /  NEXT", 14, (1248, 191), color=TEXT_DIM,
+                anchor="topright", shadow=False)
         for i, name in enumerate(b.next_queue[:5]):
-            ui.draw_preview(s, f, "", name, (1154, 224 + i * 70), cell=11,
-                            skin=self.renderer.current_skin, box_size=(184, 56))
+            ui.draw_preview(s, f, "", name, (1155, 238 + i * 66), cell=12,
+                            skin=self.renderer.current_skin, box_size=(190, 54), framed=False)
 
         def kn(action):
             return pygame.key.name(self._key(action)).upper()
-        ui.text(s, f, f"{kn('move_left')}/{kn('move_right')} 移动   {kn('soft_drop')} 软降   "
-                f"{kn('rotate_cw')} 旋转   {kn('hard_drop')} 硬降   {kn('hold')} 暂存",
-                14, (WIN_W // 2, WIN_H - 46), color=TEXT_DIM, anchor="center", shadow=False)
-        ui.text(s, f, f"{kn('pause')} 暂停   {kn('restart')} 重开   {kn('view_front')} 正面视角   "
-                "F11 全屏   场地内按住左键拖拽视角",
-                14, (WIN_W // 2, WIN_H - 25), color=TEXT_DIM, anchor="center", shadow=False)
+        footer = (f"{kn('pause')}  暂停    {kn('restart')}  重开    "
+                  f"{kn('view_front')}  正面视角    F11  全屏    鼠标左键拖拽视角")
+        ui.text(s, f, footer, 15, (WIN_W // 2, WIN_H - 24), color=(126, 139, 182),
+                anchor="center", bold=True)
 
     def _draw_countdown(self) -> None:
         n = int(math.ceil(self.countdown))
@@ -1114,8 +1124,8 @@ class Game:
         s.blit(tmp, (0, 0))
         ui.panel(s, pygame.Rect(246, 70, 788, 644))
         ui.text(s, f, "设置", 36, (640, 108), color=ACCENT, anchor="center", bold=True)
-        ui.text(s, f, "操作手感", 14, (306, 150), color=TEXT_DIM, shadow=False)
-        ui.text(s, f, "画面与个性化", 14, (666, 150), color=TEXT_DIM, shadow=False)
+        ui.text(s, f, "操作手感", 16, (306, 148), color=TEXT_DIM, shadow=False)
+        ui.text(s, f, "画面与个性化", 16, (666, 148), color=TEXT_DIM, shadow=False)
         st = self.settings
         for i, (key, label, _, _, _) in enumerate(self.settings_items):
             if key == "das":
@@ -1129,7 +1139,7 @@ class Game:
             elif key == "sound":
                 val = "开" if st["sound"] else "关"
             elif key == "skin":
-                val = SKINS.get(st["skin"], SKINS["neon"])["name"]
+                val = SKINS.get(st["skin"], SKINS["luminous"])["name"]
             elif key == "bg_theme":
                 t = st["bg_theme"]
                 val = BG_THEME_NAME.get(t, t)
@@ -1150,17 +1160,21 @@ class Game:
             sel = i == self.settings_idx
             col, row = i // 6, i % 6
             rect = pygame.Rect(286 + col * 360, 174 + row * 58, 340, 46)
-            fill = (30, 40, 82, 220) if sel else (13, 18, 42, 180)
-            border = ACCENT if sel else (95, 120, 210, 55)
-            ui.panel(s, rect, fill=fill, border=border, radius=9)
-            ui.text(s, f, label, 16, (rect.x + 14, rect.centery),
+            if sel:
+                pygame.draw.rect(s, (29, 42, 82), rect, border_radius=7)
+                pygame.draw.rect(s, ACCENT, (rect.x, rect.y + 8, 3, rect.height - 16),
+                                 border_radius=2)
+            else:
+                pygame.draw.aaline(s, (59, 70, 112),
+                                   (rect.x + 10, rect.bottom), (rect.right - 10, rect.bottom))
+            ui.text(s, f, label, 17, (rect.x + 14, rect.centery),
                     color=ACCENT if sel else TEXT_MAIN, anchor="midleft", shadow=False)
             vcol = ACCENT if sel else ACCENT2
-            ui.text(s, f, val, 16, (rect.right - 14, rect.centery),
+            ui.text(s, f, val, 17, (rect.right - 14, rect.centery),
                     color=vcol, anchor="midright", bold=sel, shadow=False)
-        ui.text(s, f, "← → 调整/切换    ↑ ↓ 选择    Enter 进入    Esc 返回", 15, (640, 548),
+        ui.text(s, f, "← → 调整/切换    ↑ ↓ 选择    Enter 进入    Esc 返回", 16, (640, 548),
                 color=TEXT_DIM, anchor="center", shadow=False)
-        ui.text(s, f, "F11 / Alt+Enter 全屏 · F 正面视角 · 全屏时 Esc 返回窗口", 14, (640, 578),
+        ui.text(s, f, "F11 / Alt+Enter 全屏 · F 正面视角 · 全屏时 Esc 返回窗口", 15, (640, 578),
                 color=TEXT_DIM, anchor="center", shadow=False)
         self.buttons = [ui.Button(pygame.Rect(540, 626, 200, 48), "返回", "back_settings")]
         self.buttons[0].draw(s, f)
@@ -1174,7 +1188,7 @@ class Game:
         ui.text(s, f, "自定义键位", 34, (640, 116), color=ACCENT,
                 anchor="center", bold=True)
         notice = self.binding_notice or "点击动作或按 Enter，然后按下新键"
-        ui.text(s, f, notice, 14, (640, 156),
+        ui.text(s, f, notice, 16, (640, 156),
                 color=GOOD if self.binding_notice.startswith("已") else TEXT_DIM,
                 anchor="center", shadow=False)
         actions = list(KEYBIND_LABELS)
@@ -1182,23 +1196,29 @@ class Game:
             col, row = i // 7, i % 7
             rect = pygame.Rect(310 + col * 340, 188 + row * 52, 320, 42)
             selected = i == self.keybind_idx
-            fill = (31, 40, 82, 220) if selected else (15, 20, 45, 175)
-            border = ACCENT if selected else (100, 125, 210, 65)
-            ui.panel(s, rect, fill=fill, border=border, radius=9)
-            ui.text(s, f, KEYBIND_LABELS[action], 16, (rect.x + 15, rect.centery),
+            if selected:
+                pygame.draw.rect(s, (31, 43, 82), rect, border_radius=7)
+                pygame.draw.rect(s, ACCENT, (rect.x, rect.y + 8, 3, rect.height - 16),
+                                 border_radius=2)
+            else:
+                pygame.draw.aaline(s, (57, 70, 111),
+                                   (rect.x + 10, rect.bottom), (rect.right - 10, rect.bottom))
+            ui.text(s, f, KEYBIND_LABELS[action], 17, (rect.x + 15, rect.centery),
                     color=TEXT_MAIN, anchor="midleft", shadow=False)
             key_name = pygame.key.name(self._key(action)).upper()
-            ui.text(s, f, key_name, 16, (rect.right - 15, rect.centery),
+            ui.text(s, f, key_name, 18, (rect.right - 15, rect.centery),
                     color=ACCENT if selected else ACCENT2, anchor="midright", bold=selected)
         if self.binding_capture is not None:
-            ui.panel(s, pygame.Rect(380, 326, 520, 148), fill=(12, 18, 46, 245),
+            ui.panel(s, pygame.Rect(380, 326, 520, 148), fill=(12, 18, 46, 255),
                      border=ACCENT, radius=16)
             ui.text(s, f, f"正在设置：{KEYBIND_LABELS[self.binding_capture]}", 23,
                     (640, 364), color=TEXT_MAIN, anchor="center", bold=True)
-            ui.text(s, f, "请按下新按键", 30, (640, 410), color=ACCENT,
+            prompt = ("请松开启动键" if self.binding_wait_release is not None
+                      else "请按下新按键")
+            ui.text(s, f, prompt, 30, (640, 410), color=ACCENT,
                     anchor="center", bold=True)
-            ui.text(s, f, "Esc 取消", 14, (640, 450), color=TEXT_DIM,
+            ui.text(s, f, "Esc 取消", 16, (640, 450), color=TEXT_DIM,
                     anchor="center", shadow=False)
         ui.text(s, f, "↑ ↓ 选择   Enter 修改   Backspace 恢复当前默认   F2 全部恢复   Esc 返回",
-                14, (640, 681), color=TEXT_DIM, anchor="center", shadow=False)
+                15, (640, 681), color=TEXT_DIM, anchor="center", shadow=False)
         self.buttons = []

@@ -239,18 +239,41 @@ def test_pause_and_restart():
 
 
 def test_keybinding_settings():
-    print("自定义键位与冲突交换")
+    print("自定义键位：真实按下/松开、持久化与游戏动作")
     g = make_game()
     g.settings["keybinds"] = dict(g.settings["keybinds"])
     old_left = g._key("move_left")
     old_right = g._key("move_right")
     g.state = "keybinds"
     g.keybind_idx = list(g.settings["keybinds"]).index("move_left")
-    g._keybinds_key(pygame.K_RETURN)
+    g.on_key_down(pygame.K_RETURN, 0)
     check("Enter 进入按键捕获", g.binding_capture == "move_left")
-    g._keybinds_key(old_right)
+    # 模拟操作系统按键重复：Enter 未松开时不能把自身错误录成新键。
+    g.on_key_down(pygame.K_RETURN, 0)
+    check("启动键自动重复不会误绑定", g.binding_capture == "move_left"
+          and g._key("move_left") == old_left)
+    g.on_key_up(pygame.K_RETURN)
+    check("松开启动键后开始录入", g.binding_wait_release is None)
+    g.on_key_down(old_right, 0)
     check("新键位生效", g._key("move_left") == old_right)
     check("冲突键位自动交换", g._key("move_right") == old_left)
+    # 改为普通字母键，回到游戏后真实驱动一次左移。
+    g.binding_capture = "move_left"
+    g.binding_wait_release = None
+    g.on_key_down(pygame.K_x, 0)
+    check("字母键改绑并保存", g._key("move_left") == pygame.K_x
+          and "已保存" in g.binding_notice, g.binding_notice)
+    g.new_game("sprint40")
+    g.update(4.0)
+    x_before = g.board.piece.x
+    g.on_key_down(pygame.K_x, 0)
+    check("改绑键可实际控制方块", g.board.piece.x == x_before - 1,
+          f"x={x_before}->{g.board.piece.x}")
+    g.on_key_up(pygame.K_x)
+    g2 = make_game()
+    check("改绑键重启后仍存在", g2._key("move_left") == pygame.K_x)
+    g = g2
+    g.state = "keybinds"
     g._keybinds_key(pygame.K_F2)
     from tetris_game.game import DEFAULT_KEYBINDS
     check("F2 恢复全部默认", g.settings["keybinds"] == DEFAULT_KEYBINDS)
@@ -366,7 +389,8 @@ def test_skins_and_backgrounds():
     for name in SKIN_ORDER:
         g.renderer.set_skin(name)
         g.draw()
-    check("六种材质渲染通过", True)
+    check("全部材质渲染通过", True)
+    g.settings["skin"] = "neon"
     g.renderer.set_skin("neon")
     # 设置界面循环切换材质/背景
     g.state = "settings"
@@ -399,7 +423,7 @@ def test_skins_and_backgrounds():
     check("设置持久化读取", g2.settings["skin"] == "crystal"
           and g2.settings["bg_theme"] == "custom", str(g2.settings))
     # 还原，避免污染后续测试
-    g2.settings["skin"] = "neon"
+    g2.settings["skin"] = "luminous"
     g2.settings["bg_theme"] = "default"
     g2.settings["custom_bg"] = ""
     g2.save_settings()

@@ -46,23 +46,13 @@ class Fonts:
         return self._cache[key]
 
     def render(self, value: str, size: int, color, bold: bool = False) -> pygame.Surface:
-        """Rasterize type at 2x and resolve it back to logical resolution.
-
-        This follows the same useful idea as DPI-aware game UIs: font detail is
-        generated before layout scaling instead of trying to sharpen a small
-        glyph afterwards.  It is especially noticeable on Chinese diagonals and
-        curved numerals.
-        """
+        """Render once at the requested size; never resample glyphs in the UI."""
         key = (value, size, tuple(color), bold)
         cached = self._render_cache.get(key)
         if cached is not None:
             self._render_cache.move_to_end(key)
             return cached
-        sample = 2
-        hi = self.get(size * sample, bold).render(value, True, color)
-        target = (max(1, round(hi.get_width() / sample)),
-                  max(1, round(hi.get_height() / sample)))
-        result = pygame.transform.smoothscale(hi, target)
+        result = self.get(size, bold).render(value, True, color)
         self._render_cache[key] = result
         if len(self._render_cache) > 384:
             self._render_cache.popitem(last=False)
@@ -85,6 +75,21 @@ def panel(surf: pygame.Surface, rect: pygame.Rect, fill=PANEL_FILL,
                      border_radius=max(2, radius - 2))
     pygame.draw.line(tmp, (205, 226, 255, 34), (radius, 1),
                      (rect.width - radius, 1), 1)
+    surf.blit(tmp, rect.topleft)
+
+
+def hud_wash(surf: pygame.Surface, rect: pygame.Rect, accent=ACCENT,
+             align: str = "left") -> None:
+    """Borderless edge fade for HUD information; avoids a stack of UI boxes."""
+    tmp = pygame.Surface(rect.size, pygame.SRCALPHA)
+    for x in range(rect.width):
+        t = x / max(1, rect.width - 1)
+        strength = (1.0 - t) if align == "left" else t
+        alpha = int(126 * strength ** 2)
+        pygame.draw.line(tmp, (5, 9, 24, alpha), (x, 0), (x, rect.height))
+    line_x = 0 if align == "left" else rect.width - 1
+    pygame.draw.line(tmp, (*accent, 118), (line_x, 16),
+                     (line_x, rect.height - 16), 1)
     surf.blit(tmp, rect.topleft)
 
 
@@ -126,15 +131,21 @@ class Button:
         self.hover = False
 
     def draw(self, surf: pygame.Surface, fonts: Fonts) -> None:
-        fill = (36, 44, 88, 210) if self.accent else (26, 32, 66, 200)
-        border = (ACCENT if self.accent else (120, 140, 255, 120))
+        fill = (30, 42, 84, 218) if self.accent else (15, 21, 48, 178)
+        border = ACCENT if self.accent else (91, 109, 170)
         if self.hover:
-            fill = (52, 62, 120, 230) if self.accent else (40, 48, 96, 220)
-            border = (255, 255, 255, 200)
-        panel(surf, self.rect, fill=fill, border=border, radius=12)
+            fill = (39, 53, 102, 232)
+            border = ACCENT
+        layer = pygame.Surface((self.rect.width, self.rect.height + 5), pygame.SRCALPHA)
+        local = pygame.Rect(0, 0, self.rect.width, self.rect.height)
+        pygame.draw.rect(layer, (0, 0, 9, 48), local.move(0, 4), border_radius=8)
+        pygame.draw.rect(layer, fill, local, border_radius=8)
+        pygame.draw.aaline(layer, (*border, 125), (10, self.rect.height - 1),
+                           (self.rect.width - 10, self.rect.height - 1))
+        surf.blit(layer, self.rect.topleft)
         if self.accent or self.hover:
-            pygame.draw.rect(surf, ACCENT, (self.rect.x, self.rect.y + 10, 3,
-                                            self.rect.height - 20), border_radius=2)
+            pygame.draw.rect(surf, ACCENT, (self.rect.x, self.rect.y + 9, 3,
+                                            self.rect.height - 18), border_radius=2)
         y = self.rect.centery - (11 if self.sub else 0)
         text(surf, fonts, self.label, 20 if self.sub else 22, (self.rect.centerx, y),
              color=(255, 255, 255) if (self.hover or self.accent) else TEXT_MAIN,
@@ -165,11 +176,12 @@ def draw_vignette(surf: pygame.Surface, strength: int, color=DANGER) -> None:
 def draw_preview(surf: pygame.Surface, fonts: Fonts, title: str,
                   piece_name: str | None, center: tuple[int, int],
                   cell: int = 12, skin: dict | None = None,
-                  box_size: tuple[int, int] = (180, 66)) -> None:
+                  box_size: tuple[int, int] = (180, 66), framed: bool = True) -> None:
     """在方框内用迷你等距方块绘制预览（外观跟随当前方块皮肤）"""
     box = pygame.Rect(0, 0, *box_size)
     box.center = center
-    panel(surf, box, fill=(12, 17, 38, 185), border=(105, 130, 220, 65), radius=10)
+    if framed:
+        panel(surf, box, fill=(12, 17, 38, 185), border=(105, 130, 220, 65), radius=10)
     content_center = [center[0], center[1]]
     if title:
         text(surf, fonts, title, 14, (center[0], box.top + 16),
@@ -180,7 +192,7 @@ def draw_preview(surf: pygame.Surface, fonts: Fonts, title: str,
     from .pieces import ALL_CELLS
     from .renderer import skin_face_colors
     from .constants import SKINS
-    skin = skin or SKINS["neon"]
+    skin = skin or SKINS["luminous"]
     color = PIECE_C(piece_name)
     cells = ALL_CELLS[piece_name][0]
     # 整体居中

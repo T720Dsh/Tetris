@@ -97,7 +97,7 @@ class Renderer:
         self.viewport = pygame.Rect(286, 88, 766, 584)
         self._glow_cache: dict[str, pygame.Surface] = {}
         self.surf_off = (0.0, 0.0)   # 绘制到子表面时的坐标偏移
-        self.current_skin: dict = SKINS["neon"]
+        self.current_skin: dict = SKINS["luminous"]
         self.custom_bg: pygame.Surface | None = None
         self._update_center()
 
@@ -106,7 +106,7 @@ class Renderer:
         self._update_center()
 
     def set_skin(self, name: str) -> None:
-        self.current_skin = SKINS.get(name, SKINS["neon"])
+        self.current_skin = SKINS.get(name, SKINS["luminous"])
 
     def load_custom_bg(self, path: str) -> bool:
         """加载用户背景图并 cover 缩放为窗口尺寸（失败返回 False）"""
@@ -248,6 +248,13 @@ class Renderer:
         col_south = _shade(col_south, south_light)
         top_pts = [(x0, top_y0), (x1, top_y1), (x2, top_y2), (x3, top_y3)]
 
+        if glow and skin.get("glow", False):
+            glow_img = self._glow(color)
+            gcx = sum(x for x, _ in top_pts) / 4.0
+            gcy = sum(y for _, y in top_pts) / 4.0
+            surf.blit(glow_img, (gcx - glow_img.get_width() / 2,
+                                 gcy - glow_img.get_height() / 2))
+
         # Contact occlusion gives depth without a screen-space halo that would
         # bleach this cube or spill across neighbouring blocks.
         self._poly(surf, [(x0, y0 + 2), (x1, y1 + 2),
@@ -273,8 +280,9 @@ class Renderer:
         # Small inset bevel: enough to catch light while preserving a clean tile.
         cx = sum(pt[0] for pt in top_pts) / 4
         cy_top = sum(pt[1] for pt in top_pts) / 4
-        inset = [(x + (cx - x) * 0.10, y + (cy_top - y) * 0.10) for x, y in top_pts]
-        self._poly(surf, inset, _shade(col_top, 1.06), max(0, alpha - 18))
+        inset = [(x + (cx - x) * 0.12, y + (cy_top - y) * 0.12) for x, y in top_pts]
+        inset_light = 0.92 if skin is SKINS.get("luminous") else 1.06
+        self._poly(surf, inset, _shade(col_top, inset_light), max(0, alpha - 18))
         # Narrow reflected-light strip gives the tile a coated surface without
         # washing neighbouring pieces in a large bloom.
         a0, a1 = top_pts[0], top_pts[1]
@@ -295,6 +303,13 @@ class Renderer:
             # One-pixel specular edge separates adjacent cubes without a halo.
             highlight = (255, 255, 255) if glow else _shade(col_top, 1.18)
             pygame.draw.aaline(surf, highlight, top_pts[0], top_pts[1])
+            if skin is SKINS.get("luminous"):
+                # Colored rim light on the two vertical faces gives each mino a
+                # coated-glass volume while keeping internal seams thin.
+                pygame.draw.aaline(surf, _shade(col_east, 1.24),
+                                   (x1, top_y1), (x2, top_y2))
+                pygame.draw.aaline(surf, _shade(col_south, 1.22),
+                                   (x2, top_y2), (x3, top_y3))
             # A second, translucent inset rim reads as reflected light rather
             # than a flat white outline.
             if glow and skin.get("glow", False):

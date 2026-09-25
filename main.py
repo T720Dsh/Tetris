@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 import os
+import shutil
 import sys
 
 
@@ -115,9 +116,10 @@ def main() -> int:
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
         os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     else:
-        # Pygame's SDL renderer performs high-quality filtered scaling in GPU
-        # space instead of stretching the finished frame in software.
-        os.environ.setdefault("PYGAME_FORCE_SCALE", "photo")
+        # Pygame's "photo" mode requests anisotropic filtering, which is useful
+        # for photos but visibly softens small UI glyphs.  Linear GPU filtering
+        # keeps non-integer fullscreen scaling smooth without that extra blur.
+        os.environ.setdefault("SDL_RENDER_SCALE_QUALITY", "linear")
 
     import pygame
 
@@ -133,12 +135,23 @@ def main() -> int:
     display = DisplayManager(pygame, WIN_W, WIN_H, headless)
     pygame.display.set_caption(TITLE)
 
-    # In a PyInstaller one-file build __file__ points into a temporary extraction
-    # folder. Store records/settings next to the downloaded exe so remapped keys
-    # actually survive and remain usable after restart.
-    app_dir = (os.path.dirname(os.path.abspath(sys.executable))
-               if getattr(sys, "frozen", False)
-               else os.path.dirname(os.path.abspath(__file__)))
+    if getattr(sys, "frozen", False):
+        # Downloads and Program Files can be read-only or protected by Windows.
+        # Keep mutable state in the per-user app-data directory and migrate the
+        # older beside-the-exe files once so existing records/keybinds survive.
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        app_dir = os.path.join(os.environ.get("LOCALAPPDATA", exe_dir), "Tetris3DRush")
+        os.makedirs(app_dir, exist_ok=True)
+        for filename in ("records.json", "settings.json"):
+            legacy = os.path.join(exe_dir, filename)
+            current = os.path.join(app_dir, filename)
+            if not os.path.exists(current) and os.path.isfile(legacy):
+                try:
+                    shutil.copy2(legacy, current)
+                except OSError:
+                    pass
+    else:
+        app_dir = os.path.dirname(os.path.abspath(__file__))
     records_path = os.path.join(app_dir, "records.json")
     game = Game(display.canvas, records_path, fullscreen_toggle=display.toggle_fullscreen)
     if not headless and game.settings.get("fullscreen"):

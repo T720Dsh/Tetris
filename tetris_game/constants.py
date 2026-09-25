@@ -84,6 +84,9 @@ BOARD_CY = 380
 # top/east/south/edge：三面与描边的明暗系数；saturation：饱和度；glow：活动块辉光；
 # alpha：不透明度；edge_w：描边宽度；pattern：顶面装饰图案
 SKINS = {
+    "luminous": {"name": "光感玻璃", "top": 1.08, "east": 0.80, "south": 0.58,
+                 "edge": 0.72, "saturation": 0.94, "glow": True, "alpha": 255,
+                 "edge_w": 1, "pattern": None},
     "neon":    {"name": "霓虹",   "top": 1.10, "east": 0.82, "south": 0.58, "edge": 0.32,
                 "saturation": 0.92, "glow": True,  "alpha": 255, "edge_w": 1, "pattern": None},
     "crystal": {"name": "水晶",   "top": 1.24, "east": 0.92, "south": 0.66, "edge": 0.42,
@@ -97,7 +100,7 @@ SKINS = {
     "aurora":  {"name": "流光",   "top": 1.26, "east": 0.96, "south": 0.66, "edge": 0.50,
                 "saturation": 1.15, "glow": True, "alpha": 255, "edge_w": 1, "pattern": None},
 }
-SKIN_ORDER = ("neon", "crystal", "metal", "pixel", "candy", "aurora")
+SKIN_ORDER = ("luminous", "neon", "crystal", "metal", "pixel", "candy", "aurora")
 
 # ---------------------------------------------------------------- 背景主题
 BG_THEMES = ("default", "nebula", "city", "aurora", "grid", "custom")
