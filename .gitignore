@@ -1,0 +1,17 @@
+# UE5 C++ project - build artifacts
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+Packed*/
+CookedOut/
+ZenData/
+*.log
+procdump_dir/
+cook_diag.dmp
+*.png
+*.ps1
+*.py
+!Source/
+!Config/
+!*.uproject
