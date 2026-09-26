@@ -1,0 +1,23 @@
+﻿{
+    "FileVersion":  3,
+    "EngineAssociation":  "5.8",
+    "Category":  "Game",
+    "Description":  "TETRIS 3D RUSH - pseudo 3D speedrun tetris (UE5 remake)",
+    "Modules":  [
+                    {
+                        "Name":  "Tetris3D",
+                        "Type":  "Runtime",
+                        "LoadingPhase":  "Default",
+                        "AdditionalDependencies":  [
+                                                       "Engine",
+                                                       "CoreUObject"
+                                                   ]
+                    }
+                ],
+    "Plugins":  [
+                    {
+                        "Name":  "TurnkeySupport",
+                        "Enabled":  false
+                    }
+                ]
+}

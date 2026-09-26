@@ -1,17 +1,13 @@
-# Godot
-.godot/
+# UE5 generated / intermediate
+Binaries/
+Intermediate/
+DerivedDataCache/
+Saved/
+Packaged/
+Packed/
 
-# 构建产物
-build/
-*.exe
-*.zip
-
-# 用户数据（本地纪录/设置）
-user_data/
-
-# 截图与临时文件
-*.png
-!docs/*.png
-_patch*.py
-_patch*.gd
-_run_*.txt
+# logs, screenshots, temp scripts
+*.log
+shot_*.png
+*.pyc
+.DS_Store

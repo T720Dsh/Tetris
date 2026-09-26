@@ -1,97 +1,81 @@
-# Tetris 3D Rush 现代竞速方块
+# TETRIS 3D RUSH — 现代竞速俄罗斯方块（UE5）
 
-**Godot 4.3 重制版** · 伪 3D 立体场地 · 360° 自由视角 · 七种竞速模式
+一个以 **竞速** 为核心的现代俄罗斯方块游戏：伪 3D 立体场地、360° 自由视角、多模式、多材质、自定义背景。由 **Unreal Engine 5.8 (C++)** 从零实现，不依赖 Techmino 代码，UI 完全独立设计。
 
-> 使用 Godot 4.3（免费开源引擎）从零重制的现代竞速俄罗斯方块。场地为可 360° 环绕观察的「竖直晶碑」3D 立体棋盘，支持多种方块材质、多套动态背景与自定义背景图上传，玩法对标现代俄罗斯方块（SRS 踢墙、7-bag、暂存、幽灵块、连击 / B2B / T 旋计分）。
-
----
-
-## 下载 Windows 版
-
-一键下载即玩（免安装，解压后双击 `Tetris3DRush.exe`）：
-
-[![Download](https://img.shields.io/badge/下载-Windows%20zip-2ea44f?logo=github)](https://github.com/T720Dsh/Tetris/releases/latest)
-
-## 特性
-
-- **伪 3D 立体场地**：10×22 竖直晶碑棋盘，方块立体凸起，光影随视角变化
-- **360° 自由视角**：鼠标拖拽旋转、滚轮缩放、Q/E 旋转、V 复位、F 正面视角；主菜单自动环绕展示
-- **7 种竞速模式**（统一 `MODE_CFG` 配置驱动）：
-  - 竞速 20 / 40 / 100 行（Sprint）
-  - 马拉松 1500（限时 15 分钟 + 10 层开局垃圾行）
-  - 限时 120 秒（Blitz 速推）
-  - 奶酪突击 40（5 列 40 行垃圾 + 松键立即锁定）
-  - 无尽生存（每 100 行 +1 秒重力，死亡即止）
-- **6 套方块材质**：霓虹 / 水晶 / 金属 / 像素 / 糖果 / 流光
-- **5 套背景主题 + 自定义**：深蓝 / 星云 / 城市 / 极光 / 赛博网格，支持上传本地图片作为全景背景
-- **现代规则**：SRS 踢墙、7-bag 洗牌、暂存（Hold）、幽灵块、连击 / Back-to-Back / T 旋 / 全清计分
-- **可调重力速度**：极慢 / 慢 / 标准 / 快 / 极快
-- **键位重绑**：任意按键自由定制（点击后按下新键）
-- **音效**：程序合成（消行 / T 旋 / 连击 / 纪录）
-- **本地纪录**：每种模式独立纪录，存档写入 exe 旁的 `user_data` 目录（不污染系统盘）
-
-## 操作
-
-| 动作 | 按键 |
-| --- | --- |
-| 左 / 右移动 | ← / →（含 DAS/ARR） |
-| 旋转（顺时针 / 逆时针 / 180°） | ↑ / Z / A |
-| 软降 | ↓ |
-| 硬降 | 空格 |
-| 暂存 | C |
-| 暂停 | ESC |
-| 重开 | R |
-| 视角旋转 | Q / E，或鼠标拖拽 |
-| 视角复位 / 正面 | V / F |
-| 缩放 | 鼠标滚轮 |
-
-## 界面预览
-
-| 主菜单 | 对局 |
-| --- | --- |
-| ![主菜单](docs/shot_menu.png) | ![对局](docs/shot_play.png) |
-
-## 从源码构建（Windows）
-
-需要：Godot 4.3 标准版（[下载](https://godotengine.org/download/)）+ 导出模板。
-
-```
-git clone https://github.com/T720Dsh/Tetris.git
-# 用 Godot 编辑器打开 project.godot，或命令行：
-godot --headless --path . --export-release "Windows Desktop" build/Tetris3DRush.exe
-# 或直接运行仓库内的打包脚本（自动导出 exe + 生成 zip）：
-build_exe.bat
-```
-
-构建后产物：`build/Tetris3DRush.exe` 与 `build/Tetris3DRush-win64.zip`。
-
-## 运行逻辑自测
-
-```
-godot --headless --path . --script res://tests/test_logic.gd
-```
-
-覆盖：7-bag、移动 / 旋转、硬降、锁定、消行计分、T 旋判定、暂存、Game Over。
-
-## 技术说明
-
-- 引擎：**Godot 4.3**（MIT 许可，免费开源，无任何商业限制）
-- 渲染：Forward+（Vulkan），棋盘方块由程序化 ArrayMesh 合并 + 自定义着色器（自发光 / 幽灵脉冲）
-- 逻辑与渲染分离：`board_logic.gd` 纯逻辑（可单测），`board_3d.gd` / `background_3d.gd` / `ui_*.gd` 负责 3D 与界面
-- 项目结构：
-  ```
-  project.godot        项目配置（含键位定义）
-  scenes/main.tscn     根场景
-  scripts/             逻辑 + 渲染 + UI + 设置
-  tests/test_logic.gd  逻辑自测
-  export_presets.cfg   导出配置
-  build_exe.bat        一键打包脚本
-  ```
-
-## 致谢
-
-玩法规则参考现代俄罗斯方块标准（SRS / 7-bag 等）。项目完全独立实现，未使用任何第三方素材或代码库。
+> 玩法规则参考经典竞速方块（7-bag 随机、SRS 踢墙、Hold、Ghost），但场地是 3D 的，视角可以自由旋转——在 3D 里玩俄罗斯方块，别有一番乐趣。
 
 ---
 
-[GitHub 仓库](https://github.com/T720Dsh/Tetris) · [Releases](https://github.com/T720Dsh/Tetris/releases)
+## 🎮 下载 Windows 版
+
+点右侧 **Releases**（或下面的链接）下载 Windows 版本压缩包，解压后双击 `Tetris3D.exe` 即可游玩，无需安装、无需联网。
+
+- **最新版下载**：https://github.com/T720Dsh/Tetris/releases/latest
+- 直接下载 zip：`https://github.com/T720Dsh/Tetris/releases/download/v3.0.0/Tetris3DRush-win64.zip`
+
+> 系统要求：Windows 10/11 64 位，独立显卡优先（集成显卡也可运行）。
+
+---
+
+## ✨ 特性
+
+| 类别 | 内容 |
+|---|---|
+| 竞速模式 | 7 种：竞速20行 / 竞速40行 / 马拉松 / 限时2分钟 / 限时5分钟 / 冲刺40行 / 极速死亡 |
+| 3D 场地 | 立体方块堆叠场地，下落/消除全部在 3D 空间呈现 |
+| 360° 视角 | 鼠标拖拽自由旋转视角、滚轮缩放、Q/E 左右转、V 复位、F 正面视角 |
+| 方块材质 | 6 套皮肤：经典 / 糖果 / 霓虹 / 冰晶 / 金属 / 像素 |
+| 背景主题 | 5+ 主题：深空 / 都市 / 极光 / 网格 / 海洋，还支持**自定义上传背景图** |
+| 键位重绑 | 设置菜单内可重新绑定全部操作键位 |
+| 音效 | 运行时合成的复古合成器音效（可开关） |
+| 数据 | 每种模式独立最高分记录（本地存档） |
+
+## 🕹️ 操作
+
+| 按键 | 功能 |
+|---|---|
+| ← → | 左右移动 |
+| ↑ | 顺时针旋转 |
+| ↓ | 软降 |
+| 空格 | 硬降 |
+| C | 暂存（Hold） |
+| 鼠标拖拽 | 旋转 3D 视角 |
+| 滚轮 | 缩放视角 |
+| Q / E | 视角左右旋转 |
+| V | 视角复位 |
+| F | 回到正面视角 |
+| ESC | 暂停 |
+| R | 重开 |
+| 设置菜单 | 可重绑所有键位 |
+
+---
+
+## 🛠️ 从源码构建
+
+需要 **Unreal Engine 5.8**（含 C++ 工具链）与 Visual Studio Build Tools（含 C++ 桌面开发）。
+
+```bat
+:: 1. 生成项目文件（右键 Tetris3D.uproject → Generate Visual Studio project files）
+:: 2. 编译 Game target：
+D:\Epic\UE_5.8\Engine\Build\BatchFiles\Build.bat Tetris3D Win64 Development -Project=D:\UE_Tetris3D\Tetris3D.uproject
+
+:: 3. 打包（Cook + BuildCookRun）：
+D:\Epic\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat BuildCookRun -project=D:\UE_Tetris3D\Tetris3D.uproject -noP4 -platform=Win64 -clientconfig=Development -build -stage -pak -archive -archivedirectory=<输出目录>
+```
+
+## 📁 项目结构
+
+```
+Source/Tetris3D/
+├─ TetrisTypes.h        # 模式/皮肤/主题枚举、7-bag、SRS 踢墙、重力表
+├─ TetrisCore.h/.cpp    # 纯逻辑：方块、旋转、踢墙、消行、暂存、胜负判定
+├─ TetrisGameMode.h/.cpp# 游戏状态机、设置/记录持久化（settings.ini / records.ini）
+├─ TetrisBoardActor.h/.cpp # 程序化 3D 网格、轨道相机、输入、音效、背景
+├─ TetrisHUD.h/.cpp     # Canvas 全 UI（中文）
+└─ Tetris3D.Target.cs / Tetris3DEditor.Target.cs
+```
+
+## 📜 版本历史
+
+- **v3.0.0**（当前）— UE5 完全重做：3D 场地渲染、360° 视角、6 皮肤、5 主题 + 自定义背景、7 竞速模式、键位重绑、合成音效。
+- v2.0.0 — Godot 原型版（已归档）。
