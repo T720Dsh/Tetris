@@ -111,6 +111,12 @@ ATetrisBoardActor::ATetrisBoardActor()
     Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
     Camera->SetupAttachment(SpringArm);
 
+    static ConstructorHelpers::FObjectFinder<UMaterialInterface> B1(TEXT("/Game/M_Block"));
+    static ConstructorHelpers::FObjectFinder<UMaterialInterface> B2(TEXT("/Game/M_Neon"));
+    static ConstructorHelpers::FObjectFinder<UMaterialInterface> B3(TEXT("/Game/M_Metal"));
+    if (B1.Succeeded()) BlockMaterials.Add(B1.Object);
+    if (B2.Succeeded()) BlockMaterials.Add(B2.Object);
+    if (B3.Succeeded()) BlockMaterials.Add(B3.Object);
 }
 
 UMaterialInterface* ATetrisBoardActor::LoadBaseMat(const TCHAR* Path)
@@ -143,17 +149,15 @@ void ATetrisBoardActor::BeginPlay()
         PC->SetViewTargetWithBlend(this, 0.f);
     }
 
-    // materials: engine vertex-color material (compiled shaders shipped with engine)
-    UMaterialInterface* VC = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineMaterials/VertexColorMaterial"));
+    // materials: project vertex-color material (cooked via ConstructorHelpers reference)
+    UMaterialInterface* VC = BlockMaterials.Num() > 0 ? BlockMaterials[0] : LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/M_Block"));
     if (!VC) { UE_LOG(LogTemp, Warning, TEXT("VC_LOAD_FAIL")); VC = UMaterial::GetDefaultMaterial(MD_Surface); }
     else { UE_LOG(LogTemp, Warning, TEXT("VC_LOAD_OK %s"), *VC->GetName()); }
     BoardMesh->SetMaterial(0, VC);
     DecorMesh->SetMaterial(0, VC);
     GroundMesh->SetMaterial(0, VC);
-    if (UMaterialInstanceDynamic* VCM = UMaterialInstanceDynamic::Create(VC, this))
-    {
-        BackgroundMesh->SetMaterial(0, VCM);
-    }
+    BlockMat = UMaterialInstanceDynamic::Create(VC, this);
+    BackgroundMesh->SetMaterial(0, VC);
 
     // dynamic lighting so the 3D scene is visible even in an empty level
     FActorSpawnParameters LP;
@@ -546,6 +550,8 @@ void ATetrisBoardActor::Tick(float DeltaSeconds)
         }
     }
 
+    if (GM && AppliedMatStyle != GM->MatStyle) ApplyMatStyle();
+    if (GM && AppliedTheme != (int32)GM->Theme) { BuildDecor(); BuildSky(); BuildBackground(); AppliedTheme = (int32)GM->Theme; }
     if (bRenderDirty) RebuildMesh();
 }
 
@@ -616,6 +622,8 @@ void ATetrisBoardActor::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
     // mouse orbit: pressed via direct key, handled in Tick via mouse delta
     PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &ATetrisBoardActor::OnMouseDrag);
     PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &ATetrisBoardActor::OnMouseRelease);
+    PlayerInputComponent->BindKey(EKeys::M, IE_Pressed, this, &ATetrisBoardActor::CycleMatStyle);
+    PlayerInputComponent->BindKey(EKeys::B, IE_Pressed, this, &ATetrisBoardActor::CycleTheme);
 }
 
 void ATetrisBoardActor::MoveLeft()
@@ -697,6 +705,39 @@ void ATetrisBoardActor::ViewLeft() { if (GM) AddCameraRotation(-0.6f, 0.f); }
 void ATetrisBoardActor::ViewRight() { if (GM) AddCameraRotation(0.6f, 0.f); }
 void ATetrisBoardActor::ViewReset() { if (GM) ResetCamera(); }
 void ATetrisBoardActor::ViewFront() { if (GM) FrontCamera(); }
+
+void ATetrisBoardActor::CycleMatStyle()
+{
+    if (!GM) return;
+    GM->MatStyle = (GM->MatStyle + 1) % 3;
+    GM->SaveSettings();
+    ApplyMatStyle();
+    PlayBeep(TEXT("hold"));
+}
+
+void ATetrisBoardActor::ApplyMatStyle()
+{
+    if (!GM || BlockMaterials.Num() == 0) return;
+    int32 Idx = FMath::Clamp(GM->MatStyle, 0, BlockMaterials.Num() - 1);
+    UMaterialInterface* VC = BlockMaterials[Idx];
+    BoardMesh->SetMaterial(0, VC);
+    DecorMesh->SetMaterial(0, VC);
+    GroundMesh->SetMaterial(0, VC);
+    BlockMat = UMaterialInstanceDynamic::Create(VC, this);
+    AppliedMatStyle = Idx;
+}
+
+void ATetrisBoardActor::CycleTheme()
+{
+    if (!GM) return;
+    GM->Theme = (ETetrisTheme)(((int32)GM->Theme + 1) % (int32)ETetrisTheme::Count);
+    GM->SaveSettings();
+    BuildDecor();
+    BuildSky();
+    BuildBackground();
+    AppliedTheme = (int32)GM->Theme;
+    PlayBeep(TEXT("rotate"));
+}
 
 void ATetrisBoardActor::OnMouseWheel(float V)
 {
@@ -790,6 +831,43 @@ void ATetrisBoardActor::BuildBackground()
         FLinearColor Col((1.f - t0) * Bot.R + t0 * Top.R, (1.f - t0) * Bot.G + t0 * Top.G, (1.f - t0) * Bot.B + t0 * Top.B);
         AddQuad(V, I, C, FVector(-120.f, Y, z0), FVector(120.f, Y, z0), FVector(120.f, Y, z1), FVector(-120.f, Y, z1), Col);
     }
+    // theme backdrop decor for a richer background
+    if (Theme == ETetrisTheme::Space)
+    {
+        for (int32 i = 0; i < 140; ++i)
+        {
+            FVector P(FMath::FRandRange(-115.f,115.f), Y + FMath::FRandRange(-0.8f,0.8f), FMath::FRandRange(-70.f,75.f));
+            AddCube(V, I, C, P, FMath::FRandRange(0.05f,0.12f), FLinearColor(0.8f,0.85f,1.0f));
+        }
+    }
+    else if (Theme == ETetrisTheme::City)
+    {
+        for (int32 i = 0; i < 45; ++i)
+        {
+            FVector P(FMath::FRandRange(-118.f,-45.f), Y, FMath::FRandRange(-72.f,8.f));
+            AddCube(V, I, C, P, FMath::FRandRange(2.f,20.f), FLinearColor(0.02f,0.03f,0.07f));
+        }
+    }
+    else if (Theme == ETetrisTheme::Aurora)
+    {
+        for (int32 i = 0; i < 12; ++i)
+        {
+            float X0 = FMath::FRandRange(-100.f,100.f);
+            float X1 = X0 + FMath::FRandRange(12.f,45.f);
+            float Z0 = FMath::FRandRange(-55.f,-25.f);
+            float Z1 = Z0 + FMath::FRandRange(35.f,80.f);
+            FLinearColor AC(FMath::FRandRange(0.1f,0.7f), FMath::FRandRange(0.4f,1.f), FMath::FRandRange(0.5f,1.f));
+            AddQuad(V, I, C, FVector(X0,Y+0.1f,Z0), FVector(X1,Y+0.1f,Z0), FVector(X1,Y+0.1f,Z1), FVector(X0,Y+0.1f,Z1), AC);
+        }
+    }
+    else if (Theme == ETetrisTheme::Ocean)
+    {
+        for (int32 i = 0; i < 70; ++i)
+        {
+            FVector P(FMath::FRandRange(-115.f,115.f), Y, FMath::FRandRange(-65.f,65.f));
+            AddCube(V, I, C, P, FMath::FRandRange(0.05f,0.22f), FLinearColor(0.08f,0.45f,0.75f));
+        }
+    }
     BackgroundMesh->CreateMeshSection(0, V, I, TArray<FVector>(), TArray<FVector2D>(), ToColor8(C), TArray<FProcMeshTangent>(), false);
     BackgroundMesh->SetVisibility(true);
 }
@@ -803,11 +881,14 @@ void ATetrisBoardActor::ApplyCustomBackground(const FString& Path)
     Tex->SRGB = true;
     Tex->UpdateResource();
 
-    UMaterial* Mat = NewObject<UMaterial>();
-    Mat->SetFlags(RF_Transient);
-    
-
-    UMaterialExpressionTextureCoordinate* TC = NewObject<UMaterialExpressionTextureCoordinate>(Mat);
-    BackgroundMesh->SetMaterial(0, UMaterial::GetDefaultMaterial(MD_Surface));
-    BackgroundMat = UMaterial::GetDefaultMaterial(MD_Surface);
+    UMaterialInterface* BgMat = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/M_BgTex"));
+    if (!BgMat) { UE_LOG(LogTemp, Warning, TEXT("BG_MAT_FAIL")); return; }
+    UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(BgMat, this);
+    if (MID)
+    {
+        MID->SetTextureParameterValue(TEXT("Tex"), Tex);
+        BackgroundMesh->SetMaterial(0, MID);
+        BackgroundMesh->SetVisibility(true);
+    }
+    BackgroundMat = BgMat;
 }

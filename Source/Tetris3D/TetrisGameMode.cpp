@@ -4,6 +4,7 @@
 #include "TetrisHUD.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/FileHelper.h"
+#include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
 #include "HAL/PlatformFileManager.h"
 #include "Engine/Engine.h"
@@ -62,6 +63,7 @@ void ATetrisGameMode::LoadSettings()
             if (!L.Split(TEXT("="), &K, &V)) continue;
             if (K == TEXT("skin")) Skin = (ETetrisSkin)FCString::Atoi(*V);
             else if (K == TEXT("theme")) Theme = (ETetrisTheme)FCString::Atoi(*V);
+    else if (K == TEXT("matstyle")) MatStyle = FCString::Atoi(*V);
             else if (K == TEXT("ghost")) bShowGhost = (V == TEXT("1"));
             else if (K == TEXT("sound")) bSoundOn = (V == TEXT("1"));
             else if (K == TEXT("das")) DasTime = FCString::Atoi(*V);
@@ -108,6 +110,7 @@ void ATetrisGameMode::SaveSettings()
     FString Cfg;
     Cfg += FString::Printf(TEXT("skin=%d\n"), (int32)Skin);
     Cfg += FString::Printf(TEXT("theme=%d\n"), (int32)Theme);
+    Cfg += FString::Printf(TEXT("matstyle=%d\n"), MatStyle);
     Cfg += FString::Printf(TEXT("ghost=%d\n"), bShowGhost ? 1 : 0);
     Cfg += FString::Printf(TEXT("sound=%d\n"), bSoundOn ? 1 : 0);
     Cfg += FString::Printf(TEXT("das=%d\n"), DasTime);
@@ -155,6 +158,14 @@ void ATetrisGameMode::BeginPlay()
         PC->bShowMouseCursor = true;
         PC->bEnableClickEvents = true;
         PC->bEnableMouseOverEvents = true;
+    }
+
+    // auto-play for headless verification: -AutoPlay=<modeIdx> (after board spawn)
+    int32 AutoIdx2 = -1;
+    if (FParse::Value(FCommandLine::Get(), TEXT("AutoPlay="), AutoIdx2) && AutoIdx2 >= 0 && AutoIdx2 < (int32)ETetrisMode::Count)
+    {
+        SelectedModeIdx = AutoIdx2;
+        StartGame((ETetrisMode)AutoIdx2);
     }
 }
 

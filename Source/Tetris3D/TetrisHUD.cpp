@@ -109,6 +109,7 @@ void ATetrisHUD::RebuildButtons()
             Y += VH * 0.075f;
         };
         Add(TEXT("方块材质: 切换"), TEXT("skin"));
+        Add(TEXT("材质质感: 切换"), TEXT("matstyle"));
         Add(TEXT("背景主题: 切换"), TEXT("theme"));
         Add(TEXT("幽灵投影: 开/关"), TEXT("ghost"));
         Add(TEXT("音效: 开/关"), TEXT("sound"));
@@ -196,7 +197,7 @@ void ATetrisHUD::DrawMenu()
     }
     DrawText(TEXT("数字1-7选模式 回车开始 操作：←→移动 ↑旋转 ↓软降 空格硬降 C暂存"), X, Y + VH * 0.03f, 0.8f, FLinearColor(0.7f, 0.75f, 0.85f));
     DrawText(TEXT("鼠标拖拽旋转视角 滚轮缩放 Q/E视角 V复位 F正面"), X, Y + VH * 0.075f, 0.8f, FLinearColor(0.7f, 0.75f, 0.85f));
-    DrawText(TEXT("ESC暂停 R重开 设置中可重绑键位"), X, Y + VH * 0.12f, 0.8f, FLinearColor(0.7f, 0.75f, 0.85f));
+    DrawText(TEXT("ESC暂停 R重开 M材质质感 B背景主题 设置中可重绑键位"), X, Y + VH * 0.12f, 0.8f, FLinearColor(0.7f, 0.75f, 0.85f));
 
     // buttons (settings / quit)
     for (const FButton& B : Buttons)
@@ -248,6 +249,16 @@ void ATetrisHUD::DrawSettings()
     float X = VW * 0.55f;
     float Y = VH * 0.18f;
     DrawText(FString::Printf(TEXT("方块材质：%s"), *SkinName), X, Y, 1.0f, FLinearColor::White);
+    Y += VH * 0.075f;
+    FString MatStyleName;
+    switch (GM->MatStyle)
+    {
+    case 0: MatStyleName = TEXT("经典"); break;
+    case 1: MatStyleName = TEXT("霓虹"); break;
+    case 2: MatStyleName = TEXT("金属"); break;
+    default: MatStyleName = TEXT("经典"); break;
+    }
+    DrawText(FString::Printf(TEXT("材质质感：%s"), *MatStyleName), X, Y, 1.0f, FLinearColor::White);
     Y += VH * 0.075f;
     DrawText(FString::Printf(TEXT("背景主题：%s"), *ThemeName), X, Y, 1.0f, FLinearColor::White);
     Y += VH * 0.075f;
@@ -367,6 +378,7 @@ void ATetrisHUD::HandleMouseClick()
             if (bInSettings)
             {
                 if (B.Tag == TEXT("skin")) { int32 S = (int32)GM->Skin; S = (S + 1) % (int32)ETetrisSkin::Count; GM->Skin = (ETetrisSkin)S; GM->SaveSettings(); }
+                else if (B.Tag == TEXT("matstyle")) { GM->MatStyle = (GM->MatStyle + 1) % 3; GM->SaveSettings(); }
                 else if (B.Tag == TEXT("theme")) { int32 T = (int32)GM->Theme; T = (T + 1) % (int32)ETetrisTheme::Count; GM->Theme = (ETetrisTheme)T; GM->SaveSettings(); }
                 else if (B.Tag == TEXT("ghost")) { GM->bShowGhost = !GM->bShowGhost; GM->SaveSettings(); }
                 else if (B.Tag == TEXT("sound")) { GM->bSoundOn = !GM->bSoundOn; GM->SaveSettings(); }

@@ -39,6 +39,7 @@ public:
     // settings
     ETetrisSkin Skin = ETetrisSkin::Classic;
     ETetrisTheme Theme = ETetrisTheme::Space;
+    int32 MatStyle = 0;
     float GravityOverride = 0.f;
     bool bShowGhost = true;
     bool bFullscreen = false;
@@ -85,5 +86,6 @@ public:
 
 protected:
     float ResultTimer = 0.f;
+    float ProbeTimer = 0.f;
     bool bResultPending = false;
 };

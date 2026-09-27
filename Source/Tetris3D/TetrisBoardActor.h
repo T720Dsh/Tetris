@@ -47,6 +47,13 @@ public:
     UPROPERTY() UMaterialInstanceDynamic* DecorMat;
     UPROPERTY() UMaterialInstanceDynamic* GroundMat;
     UPROPERTY() UMaterialInterface* BackgroundMat;
+    UPROPERTY() TArray<UMaterialInterface*> BlockMaterials;
+    int32 MatStyle = 0;
+    int32 AppliedMatStyle = -1;
+    int32 AppliedTheme = -1;
+    void CycleMatStyle();
+    void ApplyMatStyle();
+    void CycleTheme();
 
     void ApplyCustomBackground(const FString& Path);
     void BuildBackground();
